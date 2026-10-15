@@ -1,0 +1,6 @@
+{
+  "name": "Shae.made — Handcrafted Resin, Crochet & Custom Gifts",
+  "description": "Handmade magic crafted with love: custom polaroid resin frames, eternal crochet bouquets, scented candles, and curated gift hampers with direct WhatsApp ordering.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
