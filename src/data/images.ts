@@ -27,4 +27,5 @@ export const IMAGES: Record<string, string> = {
   ig4: 'https://images.unsplash.com/photo-1603006905003-be475563bc59?auto=format&fit=crop&w=600&q=80',
   ig5: 'https://images.unsplash.com/photo-1549465220-1a8b9238cd48?auto=format&fit=crop&w=600&q=80',
   ig6: 'https://images.unsplash.com/photo-1616046229478-9901c5536a45?auto=format&fit=crop&w=600&q=80',
+  workshop: '/src/assets/images/craft_workshop_hero_1792071666711.jpg',
 };

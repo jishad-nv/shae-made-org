@@ -45,39 +45,56 @@ export const HomeView: React.FC = () => {
           </div>
         </div>
 
-        {/* Interactive 3D Model Hero Section */}
-        <section className="relative overflow-hidden rounded-[20px] sm:rounded-[24px] border border-[#eee7dc] bg-gradient-to-br from-[#ffffff] via-[#fcf9f4] to-[#f5efe6] p-4 sm:p-7 mb-4 shadow-xs">
-          <div className="flex flex-col items-center text-center space-y-2 mb-2">
-            <span className="inline-flex items-center gap-1 text-[10px] sm:text-[11px] font-bold text-[#59684c] bg-[#e8eee3] px-2.5 py-0.5 rounded-full">
+        {/* Hand-Illustrated Hero Section */}
+        <section className="relative w-full h-[70svh] min-h-[520px] max-h-[640px] sm:h-[80vh] bg-[#fdf6e9] overflow-hidden rounded-[20px] sm:rounded-[24px] mb-4 shadow-xs flex items-center justify-center">
+          {/* Graph Paper Grid */}
+          <div className="absolute inset-0 opacity-15" style={{backgroundImage: 'linear-gradient(#6b7a3a 1px, transparent 1px), linear-gradient(90deg, #6b7a3a 1px, transparent 1px)', backgroundSize: '20px 20px'}}></div>
+
+          {/* Floating Craft Elements */}
+          <div className="absolute inset-0 pointer-events-none">
+            {/* Scissors */}
+            <svg className="absolute top-[10%] left-[5%] w-10 h-10 opacity-30 animate-float" viewBox="0 0 24 24" fill="none" stroke="#6b7a3a" strokeWidth="2"><path d="M18 6L10 14M10 6L18 14" /><circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/></svg>
+            {/* Glue Bottle */}
+            <svg className="absolute bottom-[10%] right-[10%] w-8 h-12 opacity-30 animate-float-delayed" viewBox="0 0 24 24" fill="#a9b57a"><rect x="7" y="5" width="10" height="14" rx="2"/><path d="M9 5V3h6v2"/></svg>
+            {/* Pencil/Ruler */}
+            <svg className="absolute top-[20%] right-[15%] w-16 h-4 opacity-30 animate-float" viewBox="0 0 60 20" fill="none" stroke="#6b7a3a" strokeWidth="2"><path d="M0 10h60M10 5v10"/></svg>
+            {/* Flower */}
+            <svg className="absolute bottom-[20%] left-[10%] w-8 h-8 opacity-30 animate-float-delayed" viewBox="0 0 24 24" fill="#a9b57a"><circle cx="12" cy="12" r="4"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>
+          </div>
+
+          {/* Torn Edge */}
+          <div className="absolute bottom-0 w-full h-8 bg-[#fcf9f4]" style={{clipPath: 'polygon(0% 100%, 0% 0%, 5% 20%, 10% 0%, 15% 20%, 20% 0%, 25% 20%, 30% 0%, 35% 20%, 40% 0%, 45% 20%, 50% 0%, 55% 20%, 60% 0%, 65% 20%, 70% 0%, 75% 20%, 80% 0%, 85% 20%, 90% 0%, 95% 20%, 100% 0%, 100% 100%)'}}></div>
+          
+          <div className="relative z-10 flex flex-col items-center text-center space-y-2 sm:space-y-3 px-4 text-[#3f4a22] animate-in fade-in duration-600">
+            <span className="inline-flex items-center gap-1 text-[10px] sm:text-[11px] font-bold text-[#6b7a3a] bg-[#a9b57a]/20 px-2.5 py-0.5 rounded-full animate-in slide-in-from-bottom-2 duration-600 delay-100">
               <span className="material-icon fill text-xs">local_florist</span>
               Handmade in Kerala · All-India Delivery
             </span>
 
-            <h1 className="font-luxury-serif font-bold text-xl sm:text-3xl text-[#2b352a] leading-[1.15] max-w-lg">
-              {heroSettings.title}
+            <h1 className="font-brand text-[clamp(40px,10vw,64px)] font-normal text-[#3f4a22] leading-tight animate-in slide-in-from-bottom-2 duration-600 delay-200">
+              Shae.made
             </h1>
-          </div>
+            
+            <p className="text-xs sm:text-sm font-sans tracking-widest uppercase animate-in slide-in-from-bottom-2 duration-600 delay-300">Handcrafted Resin & Gifts</p>
 
-          {/* 3D Animated Interactive Product Carousel Model */}
-          <Hero3DCarousel
-            products={trendingProducts}
-            getProductCover={getProductCover}
-            onSelectProduct={(id) => navigateTo(`p/${id}`)}
-          />
+            <p className="font-luxury-serif italic text-base sm:text-lg max-w-sm text-[#3f4a22] animate-in slide-in-from-bottom-2 duration-600 delay-400">
+              "Every gift is a little piece of your love, made by hand."
+            </p>
 
-          <div className="flex items-center justify-center gap-2 pt-1 flex-wrap mt-4">
-            <button
-              onClick={() => navigateTo('catalog')}
-              className="btn-primary text-xs py-1.5 px-3.5 shadow-xs"
-            >
-              Shop Crafts
-            </button>
-            <button
-              onClick={() => navigateTo('custom')}
-              className="btn-secondary text-xs py-1.5 px-3"
-            >
-              Custom Order
-            </button>
+            <div className="flex items-center justify-center gap-2 pt-1 flex-wrap animate-in slide-in-from-bottom-2 duration-600 delay-500">
+              <button
+                onClick={() => navigateTo('catalog')}
+                className="btn-primary text-xs py-2 px-5 bg-[#6b7a3a] text-white hover:bg-[#3f4a22]"
+              >
+                Shop Crafts
+              </button>
+              <button
+                onClick={() => navigateTo('custom')}
+                className="btn-secondary text-xs py-2 px-5 text-[#3f4a22] border-[#6b7a3a] hover:bg-[#6b7a3a]/10"
+              >
+                Custom Order
+              </button>
+            </div>
           </div>
         </section>
 
