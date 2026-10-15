@@ -109,8 +109,6 @@ interface StoreContextType {
   updateHeroSettings: (settings: Partial<HeroSettings>) => Promise<void>;
   updateTrendingSlotsCount: (count: number) => void;
   setTrendingSlot: (slotIndex: number, productId: string) => Promise<void>;
-  addTrendingSlot: () => void;
-  removeTrendingSlot: (slotIndex: number) => void;
   resetHeroToDefault: () => void;
   addStoryPhoto: (img: string, cap?: string) => Promise<void>;
   deleteStoryItem: (index: number) => Promise<void>;
@@ -275,7 +273,6 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         }
       } catch (err) {
         // Fallback to local storage
-        console.log('Using local client state (backend connecting...)');
       }
     };
     fetchBackendState();
@@ -949,39 +946,6 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     showToast('Trending product showcase updated');
   };
 
-  const addTrendingSlot = () => {
-    const nextSlots = [...heroSettings.slots];
-    const unused = products.find((p) => !nextSlots.includes(p.id));
-    const newId = unused ? unused.id : (products[0]?.id || 'p1');
-    nextSlots.push(newId);
-    const next = { ...heroSettings, slots: nextSlots };
-    setHeroSettings(next);
-    saveToStorage('s', next);
-    fetch('/api/showcase', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ slots: nextSlots }),
-    }).catch(console.error);
-    showToast('Added new custom slot');
-  };
-
-  const removeTrendingSlot = (slotIndex: number) => {
-    if (heroSettings.slots.length <= 1) {
-      showToast('Keep at least 1 slot');
-      return;
-    }
-    const nextSlots = heroSettings.slots.filter((_, idx) => idx !== slotIndex);
-    const next = { ...heroSettings, slots: nextSlots };
-    setHeroSettings(next);
-    saveToStorage('s', next);
-    fetch('/api/showcase', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ slots: nextSlots }),
-    }).catch(console.error);
-    showToast('Removed custom slot');
-  };
-
   const resetHeroToDefault = () => {
     setHeroSettings(INITIAL_HERO);
     saveToStorage('s', INITIAL_HERO);
@@ -1268,8 +1232,6 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         updateHeroSettings,
         updateTrendingSlotsCount,
         setTrendingSlot,
-        addTrendingSlot,
-        removeTrendingSlot,
         resetHeroToDefault,
         addStoryPhoto,
         deleteStoryItem,

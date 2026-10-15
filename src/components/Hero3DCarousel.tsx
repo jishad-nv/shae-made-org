@@ -69,16 +69,17 @@ export const Hero3DCarousel: React.FC<Hero3DCarouselProps> = ({
                     setCurrentIndex(idx);
                   }
                 }}
-                className="absolute cursor-pointer transition-all duration-700 ease-out group"
+                className="absolute cursor-pointer transition-all duration-[400ms] ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none group"
                 style={{
                   transform: `translateX(${translateX}px) translateZ(${translateZ}px) rotateY(${rotateY}deg) scale(${scale})`,
                   opacity,
                   zIndex,
                   transformStyle: 'preserve-3d',
+                  willChange: 'transform, opacity',
                 }}
               >
                 <div
-                  className={`w-[125px] sm:w-[155px] aspect-[4/5] rounded-[20px] bg-white p-2 transition-all duration-500 shadow-xl ${
+                  className={`w-[125px] sm:w-[155px] aspect-[4/5] rounded-[20px] bg-white p-2 transition-all duration-[400ms] ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none shadow-xl ${
                     isCenter
                       ? 'border-2 border-[#59684c] shadow-2xl ring-4 ring-[#e8eee3]/70'
                       : 'border border-[#eee7dc] shadow-md filter brightness-95'
@@ -147,8 +148,6 @@ export const Hero3DCarousel: React.FC<Hero3DCarouselProps> = ({
       </div>
 
       <div className="text-[10px] text-[#737c6e] mt-1.5 font-medium tracking-wide flex items-center gap-1">
-        <span className="material-icon text-xs text-[#59684c]">rotate_right</span>
-        <span>Interactive 3D Carousel Model · Click center card to view details</span>
       </div>
     </div>
   );

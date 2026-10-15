@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useStore } from '../context/StoreContext';
 import { IMAGES } from '../data/images';
 
@@ -6,6 +6,30 @@ export const FloatingWhatsApp: React.FC = () => {
   const { config, openWhatsApp, founderSettings, activeRoute } = useStore();
   const [isOpen, setIsOpen] = useState<boolean>(false);
   const [showTooltip, setShowTooltip] = useState<boolean>(true);
+
+  useEffect(() => {
+    if (isOpen) {
+      const playNotificationSound = () => {
+        const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const oscillator = audioCtx.createOscillator();
+        const gainNode = audioCtx.createGain();
+
+        oscillator.type = 'sine';
+        oscillator.frequency.setValueAtTime(600, audioCtx.currentTime);
+        oscillator.frequency.exponentialRampToValueAtTime(400, audioCtx.currentTime + 0.1);
+
+        gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+
+        oscillator.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+
+        oscillator.start();
+        oscillator.stop(audioCtx.currentTime + 0.1);
+      };
+      playNotificationSound();
+    }
+  }, [isOpen]);
 
   // Quick inquiry preset prompts
   const quickPrompts = [

@@ -119,6 +119,7 @@ export interface StoreConfig {
   igh: string;
   logo?: string;
   founder?: FounderSettings;
+  adminEmail?: string;
 }
 
 export interface DeliveryForm {

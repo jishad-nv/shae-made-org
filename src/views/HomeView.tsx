@@ -56,25 +56,6 @@ export const HomeView: React.FC = () => {
             <h1 className="font-luxury-serif font-bold text-xl sm:text-3xl text-[#2b352a] leading-[1.15] max-w-lg">
               {heroSettings.title}
             </h1>
-
-            <p className="text-[11.5px] sm:text-xs text-[#737c6e] leading-relaxed max-w-md mx-auto">
-              {heroSettings.sub}
-            </p>
-
-            <div className="flex items-center justify-center gap-2 pt-1 flex-wrap">
-              <button
-                onClick={() => navigateTo('catalog')}
-                className="btn-primary text-xs py-1.5 px-3.5 shadow-xs"
-              >
-                Shop Crafts
-              </button>
-              <button
-                onClick={() => navigateTo('custom')}
-                className="btn-secondary text-xs py-1.5 px-3"
-              >
-                Custom Order
-              </button>
-            </div>
           </div>
 
           {/* 3D Animated Interactive Product Carousel Model */}
@@ -83,6 +64,21 @@ export const HomeView: React.FC = () => {
             getProductCover={getProductCover}
             onSelectProduct={(id) => navigateTo(`p/${id}`)}
           />
+
+          <div className="flex items-center justify-center gap-2 pt-1 flex-wrap mt-4">
+            <button
+              onClick={() => navigateTo('catalog')}
+              className="btn-primary text-xs py-1.5 px-3.5 shadow-xs"
+            >
+              Shop Crafts
+            </button>
+            <button
+              onClick={() => navigateTo('custom')}
+              className="btn-secondary text-xs py-1.5 px-3"
+            >
+              Custom Order
+            </button>
+          </div>
         </section>
 
         {/* 4 Clean Category Circles (Pinterest/Korean Style) */}

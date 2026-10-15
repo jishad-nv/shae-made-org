@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useStore } from '../context/StoreContext';
+import { auth } from '../firebase';
+import { signOut } from 'firebase/auth';
 import { STAGES, INITIAL_FOUNDER } from '../data/initialData';
 import { IMAGES } from '../data/images';
 import { Product, Inquiry, Review, Order, FounderSettings } from '../types';
@@ -237,8 +239,18 @@ export const AdminView: React.FC<{ activeTab?: string }> = ({ activeTab = 'ov' }
 
         <div className="hidden md:block mt-auto pt-4 border-t border-white/10">
           <button
+            onClick={async () => {
+              await signOut(auth);
+              window.location.reload();
+            }}
+            className="w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold text-red-300 hover:text-white rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
+          >
+            <span className="material-icon text-lg">logout</span>
+            <span>Logout</span>
+          </button>
+          <button
             onClick={() => navigateTo('')}
-            className="w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold text-[#e8eee3]/80 hover:text-white rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
+            className="w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold text-[#e8eee3]/80 hover:text-white rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer mt-1"
           >
             <span className="material-icon text-lg">storefront</span>
             <span>View Storefront</span>
