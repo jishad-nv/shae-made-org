@@ -6,6 +6,7 @@ import { ProductDetailView } from './views/ProductDetailView';
 import { BagView } from './views/BagView';
 import { CustomOrderView } from './views/CustomOrderView';
 import { OrderTrackerView } from './views/OrderTrackerView';
+import { RefPhotosView } from './views/RefPhotosView';
 import { AdminView } from './views/AdminView';
 import { AdminLogin } from './views/AdminLogin';
 import { Toast } from './components/Toast';
@@ -39,6 +40,8 @@ const AppContent: React.FC = () => {
         return <CustomOrderView />;
       case 'tracker':
         return <OrderTrackerView />;
+      case 'ref':
+        return <RefPhotosView orderId={routeParam} />;
       case 'admin':
         if (isAuthenticated === null) return <div className="min-h-screen flex items-center justify-center bg-[#fcf9f4]">Loading...</div>;
         return isAuthenticated ? <AdminView activeTab={routeParam} /> : <AdminLogin />;

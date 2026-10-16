@@ -54,5 +54,12 @@ service cloud.firestore {
       allow create: if true;
       allow read, update, delete: if isSignedIn();
     }
+
+    // Custom Orders / Reference Photos fallback: anyone can create and get by ID; only admin can list/update/delete
+    match /customOrders/{orderId} {
+      allow create: if true;
+      allow get: if true;
+      allow list, update, delete: if isSignedIn();
+    }
   }
 }

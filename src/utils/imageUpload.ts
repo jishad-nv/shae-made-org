@@ -137,3 +137,77 @@ export async function uploadImageToStorage(
 ): Promise<string> {
   return compressImageToBase64(source, 900, 120 * 1024, onProgress);
 }
+
+/**
+ * Compresses an image to max 1200px, JPEG under 300 KB, returning a File object.
+ */
+export async function compressImageToFile(
+  source: File | Blob | string,
+  filename = 'reference.jpg'
+): Promise<File> {
+  const img = await (async () => {
+    return new Promise<HTMLImageElement>((resolve, reject) => {
+      const im = new Image();
+      im.crossOrigin = 'anonymous';
+      if (typeof source === 'string') {
+        im.onload = () => resolve(im);
+        im.onerror = reject;
+        im.src = source;
+      } else {
+        const url = URL.createObjectURL(source);
+        im.onload = () => {
+          URL.revokeObjectURL(url);
+          resolve(im);
+        };
+        im.onerror = () => {
+          URL.revokeObjectURL(url);
+          reject(new Error('Failed to load image'));
+        };
+        im.src = url;
+      }
+    });
+  })();
+
+  const maxDim = 1200;
+  const origWidth = img.naturalWidth || img.width;
+  const origHeight = img.naturalHeight || img.height;
+
+  let targetWidth = origWidth;
+  let targetHeight = origHeight;
+
+  if (origWidth > maxDim || origHeight > maxDim) {
+    if (origWidth > origHeight) {
+      targetWidth = maxDim;
+      targetHeight = Math.round((origHeight * maxDim) / origWidth);
+    } else {
+      targetHeight = maxDim;
+      targetWidth = Math.round((origWidth * maxDim) / origHeight);
+    }
+  }
+
+  const canvas = document.createElement('canvas');
+  canvas.width = targetWidth;
+  canvas.height = targetHeight;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas 2D not supported');
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+
+  let quality = 0.85;
+  let dataUrl = canvas.toDataURL('image/jpeg', quality);
+  let size = Math.round((dataUrl.split(',')[1].length * 3) / 4);
+
+  while (size > 300 * 1024 && quality > 0.3) {
+    quality -= 0.1;
+    dataUrl = canvas.toDataURL('image/jpeg', quality);
+    size = Math.round((dataUrl.split(',')[1].length * 3) / 4);
+  }
+
+  const blob = await new Promise<Blob>((resolve) =>
+    canvas.toBlob((b) => resolve(b || new Blob()), 'image/jpeg', quality)
+  );
+
+  return new File([blob], filename, { type: 'image/jpeg' });
+}

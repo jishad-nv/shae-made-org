@@ -1,15 +1,19 @@
 import React, { useState } from 'react';
 import { useStore } from '../context/StoreContext';
 import { Header } from '../components/Header';
-import { BottomNav } from '../components/BottomNav';
+import { compressImageToFile } from '../utils/imageUpload';
+import { db } from '../firebase';
+import { doc, setDoc } from 'firebase/firestore';
 
 export const CustomOrderView: React.FC = () => {
-  const { openWhatsApp, logInquiry, showToast } = useStore();
+  const { openWhatsApp, logInquiry, showToast, config } = useStore();
 
   const [craftType, setCraftType] = useState<string>('Resin frame');
   const [ideaText, setIdeaText] = useState<string>('');
   const [budget, setBudget] = useState<string>('');
   const [refPhotos, setRefPhotos] = useState<{ file: File; dataUrl: string }[]>([]);
+  const [isPreparing, setIsPreparing] = useState<boolean>(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files) return;
@@ -17,26 +21,25 @@ export const CustomOrderView: React.FC = () => {
 
     files.forEach((file) => {
       const reader = new FileReader();
-      reader.onload = () => {
-        const img = new Image();
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          const maxDim = 400;
-          const scale = Math.min(1, maxDim / img.width);
-          canvas.width = img.width * scale;
-          canvas.height = img.height * scale;
-          const ctx = canvas.getContext('2d');
-          ctx?.drawImage(img, 0, 0, canvas.width, canvas.height);
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.75);
-
-          setRefPhotos((prev) => {
-            if (prev.length < 3) {
-              return [...prev, { file, dataUrl }];
-            }
-            return prev;
-          });
-        };
-        img.src = reader.result as string;
+      reader.onload = async () => {
+        const rawResult = reader.result as string;
+        try {
+          const compressedFile = await compressImageToFile(rawResult, `ref_${Date.now()}.jpg`);
+          const compressedReader = new FileReader();
+          compressedReader.onload = () => {
+            const dataUrl = compressedReader.result as string;
+            setRefPhotos((prev) => {
+              if (prev.length < 3) {
+                return [...prev, { file: compressedFile, dataUrl }];
+              }
+              return prev;
+            });
+          };
+          compressedReader.readAsDataURL(compressedFile);
+        } catch (e) {
+          console.error('Compression error:', e);
+          showToast('Failed to process photo');
+        }
       };
       reader.readAsDataURL(file);
     });
@@ -48,67 +51,100 @@ export const CustomOrderView: React.FC = () => {
     setRefPhotos((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const constructMessage = () => {
+  const constructMessage = (refLink?: string) => {
     let msg = `Hello Shae.made! 🌿 I would love to order a bespoke custom piece.\n\n`;
     msg += `Craft Type: ${craftType}\n`;
     msg += `My Idea & Details: ${ideaText.trim()}\n`;
     msg += `Budget: ${budget ? `₹${Number(budget).toLocaleString('en-IN')}` : 'Flexible'}\n`;
-    if (refPhotos.length > 0) {
-      msg += `Reference Photos: ${refPhotos.length} photo(s) (attaching directly in this chat!)\n`;
+    if (refLink) {
+      msg += `Reference Photos: ${refLink}\n`;
+    } else if (refPhotos.length > 0) {
+      msg += `Reference Photos: ${refPhotos.length} photo(s) attached\n`;
     }
     msg += `\nPlease let me know your thoughts, timeline, and quote!`;
     return msg;
   };
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (!ideaText.trim()) {
       showToast('Please describe your idea first!');
+      setErrorMsg('Please describe your idea first.');
       return;
     }
 
-    const msg = constructMessage();
-    const photoDataUrls = refPhotos.map((p) => p.dataUrl);
+    setIsPreparing(true);
+    setErrorMsg(null);
 
-    logInquiry(
-      'Custom Order Lead',
-      `Custom: ${craftType}`,
-      Number(budget) || 0,
-      '—',
-      '',
-      photoDataUrls
-    );
-
-    openWhatsApp(msg);
-
-    if (refPhotos.length > 0) {
-      showToast('WhatsApp opened! Remember to attach your photos with 📎');
-    }
-  };
-
-  const handleShareWithPhotos = async () => {
-    if (!ideaText.trim()) {
-      showToast('Please describe your idea first!');
-      return;
-    }
-    const msg = constructMessage();
-
-    if (
-      typeof navigator.canShare === 'function' &&
-      refPhotos.length > 0 &&
-      navigator.canShare({ files: refPhotos.map((p) => p.file) })
-    ) {
-      try {
-        await navigator.share({
-          title: 'Custom Order - Shae.made',
-          text: msg,
-          files: refPhotos.map((p) => p.file),
-        });
-        showToast('Shared successfully!');
-      } catch (e) {
-        openWhatsApp(msg);
+    try {
+      // 1. Prepare files
+      const files: File[] = [];
+      const base64Photos: string[] = [];
+      for (const p of refPhotos) {
+        files.push(p.file);
+        base64Photos.push(p.dataUrl);
       }
-    } else {
-      openWhatsApp(msg);
+
+      // 2. Check if Web Share API with files is supported
+      const canShareFiles =
+        typeof navigator.canShare === 'function' &&
+        files.length > 0 &&
+        navigator.canShare({ files });
+
+      const msg = constructMessage();
+
+      // Log inquiry to Firestore
+      logInquiry(
+        'Custom Order Lead',
+        `Custom: ${craftType}`,
+        Number(budget) || 0,
+        '—',
+        '',
+        base64Photos
+      );
+
+      if (canShareFiles) {
+        try {
+          await navigator.share({
+            title: 'Custom Order - Shae.made',
+            text: msg,
+            files: files,
+          });
+          setIsPreparing(false);
+          showToast('Shared successfully to WhatsApp!');
+          return;
+        } catch (shareErr: any) {
+          if (shareErr.name === 'AbortError') {
+            setIsPreparing(false);
+            return; // User cancelled share
+          }
+          console.warn('Share API failed, falling back to link method:', shareErr);
+        }
+      }
+
+      // 3. Fallback: Save photos in Firestore collection "customOrders" with unique ID
+      let refLink = '';
+      if (base64Photos.length > 0) {
+        const orderId = `co_${Math.floor(100000 + Math.random() * 900000)}`;
+        const docRef = doc(db, 'customOrders', orderId);
+        await setDoc(docRef, {
+          craftType,
+          ideaText: ideaText.trim(),
+          budget: budget || '',
+          photos: base64Photos,
+          createdAt: new Date().toISOString(),
+        });
+        const siteUrl = window.location.href.split('#')[0];
+        refLink = `${siteUrl}#/ref/${orderId}`;
+      }
+
+      const finalMsg = constructMessage(refLink);
+      openWhatsApp(finalMsg);
+      setIsPreparing(false);
+      showToast('WhatsApp opened with your details and reference link!');
+    } catch (err: any) {
+      console.error('Custom order submit error:', err);
+      setErrorMsg('Failed to prepare order. Please try again.');
+      setIsPreparing(false);
     }
   };
 
@@ -127,6 +163,12 @@ export const CustomOrderView: React.FC = () => {
         </div>
 
         <div className="bg-white border border-[#eee7dc] rounded-2xl p-4 sm:p-6 shadow-xs space-y-3.5">
+          {errorMsg && (
+            <div className="p-2.5 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs">
+              {errorMsg}
+            </div>
+          )}
+
           {/* Craft Type */}
           <div>
             <label className="text-xs font-bold text-[#2b352a] block mb-1">
@@ -206,6 +248,7 @@ export const CustomOrderView: React.FC = () => {
                       className="w-full h-full object-cover"
                     />
                     <button
+                      type="button"
                       onClick={() => removePhoto(idx)}
                       className="absolute top-1 right-1 w-4 h-4 rounded-full bg-black/70 text-white flex items-center justify-center cursor-pointer text-[10px]"
                       aria-label="Remove photo"
@@ -237,30 +280,21 @@ export const CustomOrderView: React.FC = () => {
           <div className="pt-2 space-y-2">
             <button
               onClick={handleSubmit}
-              className="btn-order w-full py-2.5 text-xs sm:text-sm font-bold flex items-center justify-center gap-1.5 shadow-sm"
+              disabled={isPreparing}
+              className="btn-order w-full py-2.5 text-xs sm:text-sm font-bold flex items-center justify-center gap-1.5 shadow-sm cursor-pointer disabled:opacity-60"
             >
-              <span className="material-icon fill text-base">send</span>
-              <span>Send Request on WhatsApp</span>
+              <span className="material-icon fill text-base">
+                {isPreparing ? 'sync' : 'send'}
+              </span>
+              <span>{isPreparing ? 'Preparing Photos & WhatsApp...' : 'Send Request on WhatsApp'}</span>
             </button>
 
-            {refPhotos.length > 0 && typeof navigator.share === 'function' && (
-              <button
-                onClick={handleShareWithPhotos}
-                className="btn-secondary w-full py-2 text-xs font-bold"
-              >
-                <span className="material-icon text-sm">ios_share</span>
-                <span>Share with Photos Attached</span>
-              </button>
-            )}
-
-            <p className="text-[10.5px] text-[#737c6e] text-center leading-relaxed">
-              Shana will review your idea and message you back with design mockups and timeframe.
+            <p className="text-[11px] text-center text-[#737c6e] font-medium pt-0.5">
+              Your photos will open in the share menu. Choose WhatsApp and send.
             </p>
           </div>
         </div>
       </main>
-
-      <BottomNav />
     </div>
   );
 };
