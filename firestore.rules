@@ -1,0 +1,52 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    // Default deny all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Products: anyone can read; admin can create, update, delete
+    match /products/{productId} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+
+    // Settings (site, hero, categories): anyone can read; admin can write
+    match /settings/{settingId} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+
+    // Reviews: anyone can read; admin can write
+    match /reviews/{reviewId} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+
+    // Stories of work: anyone can read; admin can write
+    match /stories/{storyId} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+
+    // Orders: anyone can create an order; anyone can get a single order (for order tracker by ID)
+    // Only signed-in admin can list all orders or update/delete them
+    match /orders/{orderId} {
+      allow create: if true;
+      allow get: if true;
+      allow list, update, delete: if isSignedIn();
+    }
+
+    // Inquiries: anyone can submit inquiry; only signed-in admin can list/update/delete
+    match /inquiries/{inquiryId} {
+      allow create: if true;
+      allow read, update, delete: if isSignedIn();
+    }
+  }
+}

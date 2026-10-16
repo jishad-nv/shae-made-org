@@ -1,0 +1,154 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Product",
+      "description": "Handcrafted craft product item",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 200 },
+        "sub": { "type": "string", "maxLength": 300 },
+        "desc": { "type": "string", "maxLength": 5000 },
+        "cat": { "type": "string", "maxLength": 100 },
+        "price": { "type": "number" },
+        "mrp": { "type": "number" },
+        "badge": { "type": "string", "maxLength": 50 },
+        "stock": { "type": "number" },
+        "vis": { "type": "number" },
+        "img": { "type": "string", "maxLength": 2048 },
+        "more": { "type": "array" },
+        "tags": { "type": "array" }
+      },
+      "required": ["id", "name", "price", "cat"]
+    },
+    "CategoryList": {
+      "title": "CategoryList",
+      "description": "Store craft category list",
+      "type": "object",
+      "properties": {
+        "items": { "type": "array" }
+      },
+      "required": ["items"]
+    },
+    "HeroSettings": {
+      "title": "HeroSettings",
+      "description": "Store hero settings and ticker",
+      "type": "object",
+      "properties": {
+        "tick": { "type": "string", "maxLength": 300 },
+        "title": { "type": "string", "maxLength": 200 },
+        "sub": { "type": "string", "maxLength": 500 },
+        "anim": { "type": "number" },
+        "slots": { "type": "array" },
+        "img": { "type": "string", "maxLength": 2048 }
+      }
+    },
+    "SiteSettings": {
+      "title": "SiteSettings",
+      "description": "Store configuration and contact settings",
+      "type": "object",
+      "properties": {
+        "wa": { "type": "string", "maxLength": 50 },
+        "ship": { "type": "object" },
+        "igh": { "type": "string", "maxLength": 100 },
+        "logo": { "type": "string", "maxLength": 2048 },
+        "founder": { "type": "object" },
+        "adminEmail": { "type": "string", "maxLength": 254 }
+      }
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Customer order details",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "customerName": { "type": "string", "maxLength": 200 },
+        "phone": { "type": "string", "maxLength": 50 },
+        "address": { "type": "string", "maxLength": 1000 },
+        "city": { "type": "string", "maxLength": 100 },
+        "pincode": { "type": "string", "maxLength": 20 },
+        "items": { "type": "array" },
+        "totalAmount": { "type": "number" },
+        "status": { "type": "string", "enum": ["Inquiry", "Confirmed", "Crafting", "Dispatched", "Completed"] },
+        "paid": { "type": "boolean" },
+        "createdAt": { "type": "string", "maxLength": 100 },
+        "notes": { "type": "string", "maxLength": 2000 },
+        "source": { "type": "string", "maxLength": 50 },
+        "trackingNumber": { "type": "string", "maxLength": 100 }
+      },
+      "required": ["id", "customerName", "phone", "address", "items", "totalAmount", "status"]
+    },
+    "Inquiry": {
+      "title": "Inquiry",
+      "description": "Store customer inquiry or lead",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 200 },
+        "loc": { "type": "string", "maxLength": 200 },
+        "phone": { "type": "string", "maxLength": 50 },
+        "item": { "type": "string", "maxLength": 300 },
+        "total": { "type": "number" },
+        "st": { "type": "number" },
+        "time": { "type": "string", "maxLength": 100 },
+        "memo": { "type": "string", "maxLength": 2000 },
+        "refs": { "type": "array" },
+        "paid": { "type": "boolean" },
+        "due": { "type": "string", "maxLength": 100 },
+        "platform": { "type": "string", "maxLength": 50 },
+        "handle": { "type": "string", "maxLength": 100 }
+      },
+      "required": ["id", "name", "total", "st"]
+    },
+    "Review": {
+      "title": "Review",
+      "description": "Customer testimonial",
+      "type": "object",
+      "properties": {
+        "n": { "type": "string", "maxLength": 100 },
+        "pl": { "type": "string", "maxLength": 100 },
+        "r": { "type": "number" },
+        "t": { "type": "string", "maxLength": 1000 },
+        "img": { "type": "string", "maxLength": 2048 }
+      },
+      "required": ["n", "r", "t"]
+    },
+    "StoryItem": {
+      "title": "StoryItem",
+      "description": "Studio story photo showcase",
+      "type": "object",
+      "properties": {
+        "img": { "type": "string", "maxLength": 2048 },
+        "url": { "type": "string", "maxLength": 2048 },
+        "cap": { "type": "string", "maxLength": 300 }
+      },
+      "required": ["img"]
+    }
+  },
+  "firestore": {
+    "/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Public catalog of craft products"
+    },
+    "/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/SiteSettings" },
+      "description": "Site configuration, categories, and hero settings"
+    },
+    "/orders/{orderId}": {
+      "schema": { "$ref": "#/entities/Order" },
+      "description": "Customer orders"
+    },
+    "/inquiries/{inquiryId}": {
+      "schema": { "$ref": "#/entities/Inquiry" },
+      "description": "Customer leads and inquiries"
+    },
+    "/reviews/{reviewId}": {
+      "schema": { "$ref": "#/entities/Review" },
+      "description": "Customer reviews"
+    },
+    "/stories/{storyId}": {
+      "schema": { "$ref": "#/entities/StoryItem" },
+      "description": "Studio Instagram stories showcase"
+    }
+  }
+}

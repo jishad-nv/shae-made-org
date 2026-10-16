@@ -1,5 +1,20 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import {
+  collection,
+  doc,
+  onSnapshot,
+  setDoc,
+  updateDoc,
+  deleteDoc,
+  getDocs,
+  getDoc,
+  writeBatch,
+} from 'firebase/firestore';
+import { onAuthStateChanged, User } from 'firebase/auth';
+import { db, auth } from '../firebase';
+import { handleFirestoreError, OperationType } from '../utils/firestoreError';
+import { isBase64DataUrl, uploadImageToStorage } from '../utils/imageUpload';
+import {
   Product,
   Category,
   Review,
@@ -27,6 +42,14 @@ import {
 } from '../data/initialData';
 import { IMAGES } from '../data/images';
 
+export interface MigrationStatus {
+  running: boolean;
+  progress: number;
+  message: string;
+  complete: boolean;
+  error: string | null;
+}
+
 interface StoreContextType {
   products: Product[];
   categories: Category[];
@@ -53,6 +76,15 @@ interface StoreContextType {
   openLightbox: (index: number) => void;
   closeLightbox: () => void;
 
+  // Cloud Loading & Error state
+  isLoading: boolean;
+  loadError: string | null;
+  retryLoading: () => void;
+
+  // Migration from local storage to Firebase cloud
+  uploadLocalDataToCloud: () => Promise<void>;
+  migrationStatus: MigrationStatus;
+
   // Customer Order Modal
   orderModalData: { product: Product; qty: number; options?: Partial<CustomOrderOptions> } | null;
   openOrderModal: (product: Product, qty?: number, options?: Partial<CustomOrderOptions>) => void;
@@ -75,29 +107,30 @@ interface StoreContextType {
 
   // Orders Management
   createOrder: (orderData: Omit<Order, 'id' | 'createdAt'>) => Promise<Order>;
+  lookupOrder: (orderId: string) => Promise<Order | null>;
   updateOrderStatus: (orderId: string, status: Order['status']) => Promise<void>;
   toggleOrderPaid: (orderId: string) => Promise<void>;
   updateOrderTracking: (orderId: string, trackingNumber: string) => Promise<void>;
   deleteOrder: (orderId: string) => Promise<void>;
 
   // Inquiries / Instagram Leads
-  logInquiry: (name: string, item: string, total: number, loc?: string, phone?: string, refs?: string[]) => void;
+  logInquiry: (name: string, item: string, total: number, loc?: string, phone?: string, refs?: string[]) => Promise<void>;
   addInstagramLead: (lead: { name: string; handle: string; phone: string; item: string; total: number; memo: string }) => Promise<void>;
-  updateInquiryStage: (id: string, newStage: number) => void;
-  toggleInquiryPaid: (id: string) => void;
-  updateInquiryMemo: (id: string, memo: string) => void;
-  updateInquiryDue: (id: string, due: string) => void;
-  deleteInquiry: (id: string) => void;
-  addManualLead: (name: string, phone: string, item: string, total: number) => void;
+  updateInquiryStage: (id: string, newStage: number) => Promise<void>;
+  toggleInquiryPaid: (id: string) => Promise<void>;
+  updateInquiryMemo: (id: string, memo: string) => Promise<void>;
+  updateInquiryDue: (id: string, due: string) => Promise<void>;
+  deleteInquiry: (id: string) => Promise<void>;
+  addManualLead: (name: string, phone: string, item: string, total: number) => Promise<void>;
 
-  // Product Actions (up to 10 images)
-  updateProductInline: (id: string, field: 'price' | 'mrp' | 'stock' | 'vis' | 'badge', value: any) => void;
+  // Product Actions
+  updateProductInline: (id: string, field: 'price' | 'mrp' | 'stock' | 'vis' | 'badge', value: any) => Promise<void>;
   saveNewProduct: (product: Omit<Product, 'id'>) => Promise<void>;
   updateProductFull: (id: string, updated: Partial<Product>) => Promise<void>;
   deleteProduct: (id: string) => Promise<void>;
-  updateProductPhotoCover: (id: string, photoIndex: number) => void;
-  removeProductPhoto: (id: string, photoIndex: number) => void;
-  addProductPhoto: (id: string, photoData: string) => void;
+  updateProductPhotoCover: (id: string, photoIndex: number) => Promise<void>;
+  removeProductPhoto: (id: string, photoIndex: number) => Promise<void>;
+  addProductPhoto: (id: string, photoData: string) => Promise<void>;
 
   // Category Actions
   addCategory: (name: string, icon: string) => Promise<boolean>;
@@ -107,24 +140,24 @@ interface StoreContextType {
 
   // Showcase / Hero / Stories
   updateHeroSettings: (settings: Partial<HeroSettings>) => Promise<void>;
-  updateTrendingSlotsCount: (count: number) => void;
+  updateTrendingSlotsCount: (count: number) => Promise<void>;
   setTrendingSlot: (slotIndex: number, productId: string) => Promise<void>;
-  resetHeroToDefault: () => void;
+  resetHeroToDefault: () => Promise<void>;
   addStoryPhoto: (img: string, cap?: string) => Promise<void>;
-  deleteStoryItem: (index: number) => Promise<void>;
+  deleteStoryItem: (storyIdOrIndex: string | number) => Promise<void>;
 
   // Reviews
   addReview: (review: Review) => Promise<void>;
-  deleteReview: (index: number) => Promise<void>;
+  deleteReview: (reviewIdOrIndex: string | number) => Promise<void>;
 
   // Founder Section
   founderSettings: FounderSettings;
   updateFounderSettings: (settings: Partial<FounderSettings>) => Promise<void>;
-  resetFounderToDefault: () => void;
+  resetFounderToDefault: () => Promise<void>;
 
   // Settings
   updateStoreSettings: (wa?: string, fee?: number, free?: number, igh?: string) => Promise<void>;
-  updateStoreLogo: (logoUrl: string) => void;
+  updateStoreLogo: (logoUrl: string) => Promise<void>;
   publishChanges: () => Promise<void>;
   generateWhatsAppOrderMessage: (
     items: { name: string; q: number; price: number; note?: string; img?: string }[],
@@ -137,44 +170,66 @@ interface StoreContextType {
 
 const StoreContext = createContext<StoreContextType | undefined>(undefined);
 
-const loadFromStorage = <T,>(key: string, fallback: T): T => {
+// Cart is explicitly kept local per visitor
+const loadLocalBag = (): BagItem[] => {
   try {
-    const saved = localStorage.getItem(`sm_${key}`);
-    return saved ? JSON.parse(saved) : fallback;
-  } catch (e) {
-    console.error(`Failed to load ${key} from storage:`, e);
-    return fallback;
+    const saved = localStorage.getItem('sm_bag');
+    return saved ? JSON.parse(saved) : [];
+  } catch {
+    return [];
   }
 };
 
-const saveToStorage = (key: string, data: any) => {
+const saveLocalBag = (bag: BagItem[]) => {
   try {
-    localStorage.setItem(`sm_${key}`, JSON.stringify(data));
+    localStorage.setItem('sm_bag', JSON.stringify(bag));
   } catch (e) {
-    console.error(`Storage error for ${key}:`, e);
+    console.error('Error saving bag:', e);
+  }
+};
+
+const loadLocalFav = (): string[] => {
+  try {
+    const saved = localStorage.getItem('sm_fav');
+    return saved ? JSON.parse(saved) : [];
+  } catch {
+    return [];
   }
 };
 
 export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [config, setConfig] = useState<StoreConfig>(() => loadFromStorage('cfg', INITIAL_CONFIG));
-  const [products, setProducts] = useState<Product[]>(() => loadFromStorage('p', INITIAL_PRODUCTS));
-  const [heroSettings, setHeroSettings] = useState<HeroSettings>(() => loadFromStorage('s', INITIAL_HERO));
-  const [categories, setCategories] = useState<Category[]>(() => loadFromStorage('c', INITIAL_CATEGORIES));
-  const [reviews, setReviews] = useState<Review[]>(() => loadFromStorage('rv', INITIAL_REVIEWS));
-  const [stories, setStories] = useState<StoryItem[]>(() => loadFromStorage('ig', INITIAL_STORIES));
-  const [inquiries, setInquiries] = useState<Inquiry[]>(() => loadFromStorage('inq', INITIAL_INQUIRIES));
-  const [orders, setOrders] = useState<Order[]>(() => loadFromStorage('orders', INITIAL_ORDERS));
-  const [bag, setBag] = useState<BagItem[]>(() => loadFromStorage('bag', []));
-  const [favorites, setFavorites] = useState<string[]>(() => loadFromStorage('fav', []));
-  const [founderSettings, setFounderSettings] = useState<FounderSettings>(() => {
-    const loaded = loadFromStorage<FounderSettings | null>('founder', null);
-    if (loaded) return loaded;
-    const cfg = loadFromStorage<StoreConfig | null>('cfg', null);
-    if (cfg?.founder) return cfg.founder;
-    return INITIAL_FOUNDER;
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+
+  // Live Cloud States
+  const [products, setProducts] = useState<Product[]>([]);
+  const [categories, setCategories] = useState<Category[]>(INITIAL_CATEGORIES);
+  const [heroSettings, setHeroSettings] = useState<HeroSettings>(INITIAL_HERO);
+  const [reviews, setReviews] = useState<Review[]>(INITIAL_REVIEWS);
+  const [stories, setStories] = useState<StoryItem[]>(INITIAL_STORIES);
+  const [inquiries, setInquiries] = useState<Inquiry[]>([]);
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [config, setConfig] = useState<StoreConfig>(INITIAL_CONFIG);
+  const [founderSettings, setFounderSettings] = useState<FounderSettings>(INITIAL_FOUNDER);
+
+  // Local-only visitor states (Cart and Favorites)
+  const [bag, setBag] = useState<BagItem[]>(loadLocalBag);
+  const [favorites, setFavorites] = useState<string[]>(loadLocalFav);
+
+  // Status & Loading
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [retryTrigger, setRetryTrigger] = useState<number>(0);
+
+  // Migration status
+  const [migrationStatus, setMigrationStatus] = useState<MigrationStatus>({
+    running: false,
+    progress: 0,
+    message: '',
+    complete: false,
+    error: null,
   });
 
-  // Customer Order Modal
+  // Modal & Navigation States
   const [orderModalData, setOrderModalData] = useState<{
     product: Product;
     qty: number;
@@ -222,62 +277,6 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     window.location.hash = `#/${route}`;
   };
 
-  // Sync with Backend API on mount
-  useEffect(() => {
-    const fetchBackendState = async () => {
-      try {
-        const res = await fetch('/api/state');
-        if (res.ok) {
-          const data = await res.json();
-          const localFounder = localStorage.getItem('sm_founder');
-          const localConfig = localStorage.getItem('sm_cfg');
-          const localHero = localStorage.getItem('sm_s');
-
-          if (!localFounder && data.config?.founder) {
-            setFounderSettings(data.config.founder);
-            saveToStorage('founder', data.config.founder);
-          }
-          if (!localConfig && data.config) {
-            setConfig(data.config);
-            saveToStorage('cfg', data.config);
-          }
-          if (!localHero && data.heroSettings) {
-            setHeroSettings(data.heroSettings);
-            saveToStorage('s', data.heroSettings);
-          }
-
-          if (data.products && products.length === INITIAL_PRODUCTS.length) {
-            setProducts(data.products);
-            saveToStorage('p', data.products);
-          }
-          if (data.categories) {
-            setCategories(data.categories);
-            saveToStorage('c', data.categories);
-          }
-          if (data.reviews) {
-            setReviews(data.reviews);
-            saveToStorage('rv', data.reviews);
-          }
-          if (data.stories) {
-            setStories(data.stories);
-            saveToStorage('ig', data.stories);
-          }
-          if (data.inquiries) {
-            setInquiries(data.inquiries);
-            saveToStorage('inq', data.inquiries);
-          }
-          if (data.orders) {
-            setOrders(data.orders);
-            saveToStorage('orders', data.orders);
-          }
-        }
-      } catch (err) {
-        // Fallback to local storage
-      }
-    };
-    fetchBackendState();
-  }, []);
-
   const showToast = (msg: string) => {
     setToastMsg(msg);
     setTimeout(() => {
@@ -291,227 +290,408 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   const openOrderModal = (product: Product, qty = 1, options?: Partial<CustomOrderOptions>) => {
     setOrderModalData({ product, qty, options });
   };
+  const closeOrderModal = () => setOrderModalData(null);
 
-  const closeOrderModal = () => {
-    setOrderModalData(null);
+  // Auth state listener
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (user) => {
+      setCurrentUser(user);
+    });
+    return () => unsub();
+  }, []);
+
+  // ======================== REALTIME FIRESTORE LISTENERS ========================
+  useEffect(() => {
+    setIsLoading(true);
+    setLoadError(null);
+    let loadedCount = 0;
+    const totalRequired = 4; // products, categories, site, hero
+
+    const checkComplete = () => {
+      loadedCount++;
+      if (loadedCount >= totalRequired) {
+        setIsLoading(false);
+      }
+    };
+
+    const unsubs: (() => void)[] = [];
+
+    // 1. PRODUCTS Listener
+    try {
+      const unsubProducts = onSnapshot(
+        collection(db, 'products'),
+        (snapshot) => {
+          const list: Product[] = [];
+          snapshot.forEach((d) => {
+            list.push({ id: d.id, ...d.data() } as Product);
+          });
+          setProducts(list);
+          checkComplete();
+        },
+        (error) => {
+          console.error('Error listening to products:', error);
+          setLoadError('Failed to load live products from cloud.');
+          setIsLoading(false);
+          handleFirestoreError(error, OperationType.LIST, 'products');
+        }
+      );
+      unsubs.push(unsubProducts);
+    } catch (err) {
+      console.error(err);
+    }
+
+    // 2. CATEGORIES Listener
+    try {
+      const unsubCat = onSnapshot(
+        doc(db, 'settings', 'categories'),
+        (snapshot) => {
+          if (snapshot.exists() && Array.isArray(snapshot.data().items)) {
+            setCategories(snapshot.data().items);
+          } else {
+            setCategories(INITIAL_CATEGORIES);
+          }
+          checkComplete();
+        },
+        (error) => {
+          console.warn('Categories listener error:', error);
+          checkComplete();
+        }
+      );
+      unsubs.push(unsubCat);
+    } catch (err) {
+      console.error(err);
+    }
+
+    // 3. SITE SETTINGS Listener
+    try {
+      const unsubSite = onSnapshot(
+        doc(db, 'settings', 'site'),
+        (snapshot) => {
+          if (snapshot.exists()) {
+            const data = snapshot.data();
+            setConfig((prev) => ({
+              ...prev,
+              ...data,
+              ship: data.ship || prev.ship,
+            }));
+            if (data.founder) {
+              setFounderSettings(data.founder);
+            }
+          }
+          checkComplete();
+        },
+        (error) => {
+          console.warn('Site settings listener error:', error);
+          checkComplete();
+        }
+      );
+      unsubs.push(unsubSite);
+    } catch (err) {
+      console.error(err);
+    }
+
+    // 4. HERO SETTINGS Listener
+    try {
+      const unsubHero = onSnapshot(
+        doc(db, 'settings', 'hero'),
+        (snapshot) => {
+          if (snapshot.exists()) {
+            setHeroSettings(snapshot.data() as HeroSettings);
+          }
+          checkComplete();
+        },
+        (error) => {
+          console.warn('Hero settings listener error:', error);
+          checkComplete();
+        }
+      );
+      unsubs.push(unsubHero);
+    } catch (err) {
+      console.error(err);
+    }
+
+    // 5. REVIEWS Listener
+    try {
+      const unsubRev = onSnapshot(
+        collection(db, 'reviews'),
+        (snapshot) => {
+          if (!snapshot.empty) {
+            const list: Review[] = [];
+            snapshot.forEach((d) => {
+              list.push(d.data() as Review);
+            });
+            setReviews(list);
+          } else {
+            setReviews(INITIAL_REVIEWS);
+          }
+        },
+        (error) => {
+          console.warn('Reviews listener error:', error);
+        }
+      );
+      unsubs.push(unsubRev);
+    } catch (err) {
+      console.error(err);
+    }
+
+    // 6. STORIES Listener
+    try {
+      const unsubStories = onSnapshot(
+        collection(db, 'stories'),
+        (snapshot) => {
+          if (!snapshot.empty) {
+            const list: StoryItem[] = [];
+            snapshot.forEach((d) => {
+              list.push(d.data() as StoryItem);
+            });
+            setStories(list);
+          } else {
+            setStories(INITIAL_STORIES);
+          }
+        },
+        (error) => {
+          console.warn('Stories listener error:', error);
+        }
+      );
+      unsubs.push(unsubStories);
+    } catch (err) {
+      console.error(err);
+    }
+
+    // 7. ORDERS & INQUIRIES Listeners (for signed-in admin)
+    if (currentUser) {
+      try {
+        const unsubOrders = onSnapshot(
+          collection(db, 'orders'),
+          (snapshot) => {
+            const list: Order[] = [];
+            snapshot.forEach((d) => {
+              list.push({ id: d.id, ...d.data() } as Order);
+            });
+            setOrders(list);
+          },
+          (error) => {
+            console.warn('Orders listener error (admin):', error);
+          }
+        );
+        unsubs.push(unsubOrders);
+
+        const unsubInq = onSnapshot(
+          collection(db, 'inquiries'),
+          (snapshot) => {
+            const list: Inquiry[] = [];
+            snapshot.forEach((d) => {
+              list.push({ id: d.id, ...d.data() } as Inquiry);
+            });
+            setInquiries(list);
+          },
+          (error) => {
+            console.warn('Inquiries listener error (admin):', error);
+          }
+        );
+        unsubs.push(unsubInq);
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    // Safety timeout to avoid hanging indefinitely if offline
+    const timer = setTimeout(() => {
+      setIsLoading(false);
+    }, 4000);
+
+    return () => {
+      clearTimeout(timer);
+      unsubs.forEach((u) => u());
+    };
+  }, [retryTrigger, currentUser]);
+
+  const retryLoading = () => {
+    setRetryTrigger((prev) => prev + 1);
   };
 
-  // Image helpers
-  const getProductCover = (p: Product): string => {
-    if (!p) return IMAGES.logo;
-    return IMAGES[p.img] || p.img || IMAGES.logo;
-  };
-
-  const getProductGallery = (p: Product): string[] => {
-    if (!p) return [IMAGES.logo];
-    const raw = [p.img, ...(p.more || [])].filter(Boolean);
-    return raw.map((src) => IMAGES[src] || src || IMAGES.logo);
-  };
-
-  const getProductById = (id: string): Product | undefined => {
-    return products.find((p) => p.id === id);
-  };
-
-  // Cart / Bag
+  // ======================== BAG (CART) & FAVORITES ========================
   const addToBag = (id: string, options?: Partial<CustomOrderOptions>, qty = 1) => {
-    const product = getProductById(id);
-    if (!product) return;
-
-    const notesParts: string[] = [];
-    if (['Resin', 'Frames', 'Resin Crafts', 'Custom Frames'].includes(product.cat) && options?.color) {
-      notesParts.push(`Colour: ${options.color}`);
-    }
-    if (['Frames', 'Custom Frames'].includes(product.cat) && options?.led) {
-      notesParts.push(`Lights: ${options.led}`);
-    }
-    if (options?.msg?.trim()) {
-      notesParts.push(`Text: ${options.msg.trim()}`);
-    }
-    const noteString = notesParts.join(', ');
-
     setBag((prev) => {
-      const existing = prev.find((item) => item.id === id && item.note === noteString);
-      let updated: BagItem[];
+      const existing = prev.find((item) => item.id === id);
+      let next: BagItem[];
       if (existing) {
-        updated = prev.map((item) =>
-          item.id === id && item.note === noteString ? { ...item, q: item.q + qty } : item
+        next = prev.map((item) =>
+          item.id === id ? { ...item, q: item.q + qty } : item
         );
       } else {
-        updated = [...prev, { id, q: qty, note: noteString }];
+        const note = options?.color ? `Color: ${options.color}` : '';
+        next = [...prev, { id, q: qty, note }];
       }
-      saveToStorage('bag', updated);
-      return updated;
+      saveLocalBag(next);
+      return next;
     });
-
-    showToast(`Added "${product.name}" to shopping bag!`);
+    showToast('Added to bag');
   };
 
   const updateBagQty = (id: string, delta: number) => {
     setBag((prev) => {
-      const updated = prev
+      const next = prev
         .map((item) => {
           if (item.id === id) {
-            const nextQty = item.q + delta;
-            return nextQty > 0 ? { ...item, q: nextQty } : null;
+            const q = item.q + delta;
+            return q > 0 ? { ...item, q } : null;
           }
           return item;
         })
-        .filter(Boolean) as BagItem[];
-      saveToStorage('bag', updated);
-      return updated;
+        .filter((item): item is BagItem => item !== null);
+      saveLocalBag(next);
+      return next;
     });
   };
 
   const removeFromBag = (id: string) => {
     setBag((prev) => {
-      const updated = prev.filter((item) => item.id !== id);
-      saveToStorage('bag', updated);
-      return updated;
+      const next = prev.filter((item) => item.id !== id);
+      saveLocalBag(next);
+      return next;
     });
-    showToast('Item removed');
+    showToast('Item removed from bag');
   };
 
   const clearBag = () => {
     setBag([]);
-    saveToStorage('bag', []);
+    saveLocalBag([]);
   };
 
-  const bagCount = bag.reduce((sum, item) => sum + item.q, 0);
-
-  const bagSubtotal = bag.reduce((sum, item) => {
-    const product = getProductById(item.id);
-    return sum + (product ? product.price * item.q : 0);
-  }, 0);
-
-  const shippingFee =
-    bagSubtotal > 0 && bagSubtotal < config.ship.free ? config.ship.fee : 0;
-
-  const bagTotal = bagSubtotal + shippingFee;
-
-  // Favorites
   const toggleFavorite = (id: string) => {
     setFavorites((prev) => {
-      const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
-      saveToStorage('fav', next);
-      showToast(next.includes(id) ? 'Saved to favorites' : 'Removed from favorites');
+      const next = prev.includes(id) ? prev.filter((f) => f !== id) : [...prev, id];
+      try {
+        localStorage.setItem('sm_fav', JSON.stringify(next));
+      } catch {}
       return next;
     });
   };
 
   const isFavorite = (id: string) => favorites.includes(id);
 
-  // ======================== ORDERS PIPELINE (BACKEND) ========================
-  const createOrder = async (orderData: Omit<Order, 'id' | 'createdAt'>): Promise<Order> => {
-    try {
-      const res = await fetch('/api/orders', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(orderData),
-      });
+  // Cart computed
+  const bagCount = bag.reduce((sum, item) => sum + item.q, 0);
+  const bagSubtotal = bag.reduce((sum, item) => {
+    const prod = products.find((p) => p.id === item.id);
+    return sum + (prod ? prod.price * item.q : 0);
+  }, 0);
+  const shippingFee =
+    bagSubtotal === 0 || bagSubtotal >= config.ship.free ? 0 : config.ship.fee;
+  const bagTotal = bagSubtotal + shippingFee;
 
-      if (res.ok) {
-        const created: Order = await res.json();
-        setOrders((prev) => [created, ...prev]);
-        saveToStorage('orders', [created, ...orders]);
-        return created;
-      }
-    } catch (e) {
-      console.error('API createOrder failed, falling back to local:', e);
+  // Product Helpers
+  const getProductById = (id: string) => products.find((p) => p.id === id);
+  const getProductCover = (product: Product): string => {
+    if (product.img && (product.img.startsWith('http') || product.img.startsWith('/'))) {
+      return product.img;
+    }
+    return IMAGES[product.img] || product.img || IMAGES.coasters;
+  };
+
+  const getProductGallery = (product: Product): string[] => {
+    const cover = getProductCover(product);
+    const gallery = (product.more || []).map((src) => {
+      if (src.startsWith('http') || src.startsWith('/')) return src;
+      return IMAGES[src] || src;
+    });
+    return [cover, ...gallery.filter((s) => s !== cover)];
+  };
+
+  // ======================== ORDERS ========================
+  const createOrder = async (orderData: Omit<Order, 'id' | 'createdAt'>): Promise<Order> => {
+    const orderId = `SM-${Date.now().toString().slice(-6)}`;
+    const newOrder: Order = {
+      ...orderData,
+      id: orderId,
+      createdAt: new Date().toLocaleDateString('en-IN', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+      }),
+    };
+
+    try {
+      await setDoc(doc(db, 'orders', orderId), newOrder);
+    } catch (err) {
+      console.error('Error saving order to Firestore:', err);
+      handleFirestoreError(err, OperationType.CREATE, `orders/${orderId}`);
     }
 
-    // Fallback if backend offline
-    const fallbackId = `SM-${Math.floor(1000 + Math.random() * 9000)}`;
-    const fallbackOrder: Order = {
-      ...orderData,
-      id: fallbackId,
-      createdAt: 'Just now',
-    };
-    const nextOrders = [fallbackOrder, ...orders];
-    setOrders(nextOrders);
-    saveToStorage('orders', nextOrders);
-    return fallbackOrder;
+    setOrders((prev) => [newOrder, ...prev]);
+    showToast(`Order #${orderId} confirmed!`);
+    return newOrder;
+  };
+
+  const lookupOrder = async (orderId: string): Promise<Order | null> => {
+    try {
+      const snap = await getDoc(doc(db, 'orders', orderId.trim()));
+      if (snap.exists()) {
+        return { id: snap.id, ...snap.data() } as Order;
+      }
+      return null;
+    } catch (err) {
+      console.error('Lookup order error:', err);
+      return null;
+    }
   };
 
   const updateOrderStatus = async (orderId: string, status: Order['status']) => {
     try {
-      await fetch(`/api/orders/${orderId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status }),
-      });
-    } catch (e) {
-      console.error(e);
+      await updateDoc(doc(db, 'orders', orderId), { status });
+      setOrders((prev) =>
+        prev.map((o) => (o.id === orderId ? { ...o, status } : o))
+      );
+      showToast(`Order status updated to ${status}`);
+    } catch (err) {
+      console.error(err);
+      handleFirestoreError(err, OperationType.UPDATE, `orders/${orderId}`);
     }
-
-    setOrders((prev) => {
-      const next = prev.map((o) => (o.id === orderId ? { ...o, status } : o));
-      saveToStorage('orders', next);
-      return next;
-    });
-    showToast(`Order status updated to ${status}`);
   };
 
   const toggleOrderPaid = async (orderId: string) => {
     const order = orders.find((o) => o.id === orderId);
     if (!order) return;
     const nextPaid = !order.paid;
-
     try {
-      await fetch(`/api/orders/${orderId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ paid: nextPaid }),
-      });
-    } catch (e) {
-      console.error(e);
+      await updateDoc(doc(db, 'orders', orderId), { paid: nextPaid });
+      setOrders((prev) =>
+        prev.map((o) => (o.id === orderId ? { ...o, paid: nextPaid } : o))
+      );
+      showToast(nextPaid ? 'Marked as Paid' : 'Marked as Unpaid');
+    } catch (err) {
+      console.error(err);
+      handleFirestoreError(err, OperationType.UPDATE, `orders/${orderId}`);
     }
-
-    setOrders((prev) => {
-      const next = prev.map((o) => (o.id === orderId ? { ...o, paid: nextPaid } : o));
-      saveToStorage('orders', next);
-      return next;
-    });
-    showToast(nextPaid ? 'Marked as Paid' : 'Marked as Unpaid');
   };
 
   const updateOrderTracking = async (orderId: string, trackingNumber: string) => {
     try {
-      await fetch(`/api/orders/${orderId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ trackingNumber, status: 'Dispatched' }),
-      });
-    } catch (e) {
-      console.error(e);
-    }
-
-    setOrders((prev) => {
-      const next = prev.map((o) =>
-        o.id === orderId ? { ...o, trackingNumber, status: 'Dispatched' as Order['status'] } : o
+      await updateDoc(doc(db, 'orders', orderId), { trackingNumber });
+      setOrders((prev) =>
+        prev.map((o) => (o.id === orderId ? { ...o, trackingNumber } : o))
       );
-      saveToStorage('orders', next);
-      return next;
-    });
-    showToast('Tracking number saved');
+      showToast('Tracking number updated');
+    } catch (err) {
+      console.error(err);
+      handleFirestoreError(err, OperationType.UPDATE, `orders/${orderId}`);
+    }
   };
 
   const deleteOrder = async (orderId: string) => {
     try {
-      await fetch(`/api/orders/${orderId}`, { method: 'DELETE' });
-    } catch (e) {
-      console.error(e);
+      await deleteDoc(doc(db, 'orders', orderId));
+      setOrders((prev) => prev.filter((o) => o.id !== orderId));
+      showToast('Order removed');
+    } catch (err) {
+      console.error(err);
+      handleFirestoreError(err, OperationType.DELETE, `orders/${orderId}`);
     }
-
-    setOrders((prev) => {
-      const next = prev.filter((o) => o.id !== orderId);
-      saveToStorage('orders', next);
-      return next;
-    });
-    showToast('Order removed');
   };
 
-  // ======================== INQUIRIES & INSTAGRAM LEADS ========================
-  const logInquiry = (
+  // ======================== INQUIRIES & LEADS ========================
+  const logInquiry = async (
     name: string,
     item: string,
     total: number,
@@ -519,8 +699,9 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     phone = '',
     refs: string[] = []
   ) => {
+    const id = String(Math.floor(1000 + Math.random() * 9000));
     const newInquiry: Inquiry = {
-      id: String(Math.floor(1000 + Math.random() * 9000)),
+      id,
       name: name.trim() || 'Website Visitor',
       loc: loc.trim() || '—',
       phone: phone.trim(),
@@ -534,17 +715,12 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       platform: 'Storefront',
     };
 
-    fetch('/api/inquiries', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newInquiry),
-    }).catch(console.error);
-
-    setInquiries((prev) => {
-      const next = [newInquiry, ...prev];
-      saveToStorage('inq', next);
-      return next;
-    });
+    try {
+      await setDoc(doc(db, 'inquiries', id), newInquiry);
+    } catch (err) {
+      console.error('Error saving inquiry:', err);
+    }
+    setInquiries((prev) => [newInquiry, ...prev]);
   };
 
   const addInstagramLead = async (lead: {
@@ -555,35 +731,9 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     total: number;
     memo: string;
   }) => {
-    try {
-      const res = await fetch('/api/inquiries', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: lead.name,
-          phone: lead.phone,
-          loc: `Instagram (${lead.handle})`,
-          item: lead.item,
-          total: lead.total,
-          memo: lead.memo,
-          platform: 'Instagram',
-          handle: lead.handle,
-        }),
-      });
-
-      if (res.ok) {
-        const created = await res.json();
-        setInquiries((prev) => [created, ...prev]);
-        saveToStorage('inq', [created, ...inquiries]);
-        showToast('Instagram lead saved to CRM!');
-        return;
-      }
-    } catch (e) {
-      console.error(e);
-    }
-
-    const fallback: Inquiry = {
-      id: String(Math.floor(1000 + Math.random() * 9000)),
+    const id = String(Math.floor(1000 + Math.random() * 9000));
+    const newInq: Inquiry = {
+      id,
       name: lead.name,
       loc: `Instagram (${lead.handle})`,
       phone: lead.phone,
@@ -596,504 +746,615 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       handle: lead.handle,
       paid: false,
     };
-    setInquiries((prev) => [fallback, ...prev]);
-    saveToStorage('inq', [fallback, ...inquiries]);
-    showToast('Instagram lead added!');
+
+    try {
+      await setDoc(doc(db, 'inquiries', id), newInq);
+      setInquiries((prev) => [newInq, ...prev]);
+      showToast('Instagram lead saved to cloud!');
+    } catch (err) {
+      console.error(err);
+      handleFirestoreError(err, OperationType.CREATE, `inquiries/${id}`);
+    }
   };
 
-  const updateInquiryStage = (id: string, newStage: number) => {
-    fetch(`/api/inquiries/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ st: newStage }),
-    }).catch(console.error);
-
-    setInquiries((prev) => {
-      const next = prev.map((i) => (i.id === id ? { ...i, st: newStage } : i));
-      saveToStorage('inq', next);
-      return next;
-    });
-    showToast('Lead stage updated');
+  const updateInquiryStage = async (id: string, newStage: number) => {
+    try {
+      await updateDoc(doc(db, 'inquiries', id), { st: newStage });
+      setInquiries((prev) => prev.map((i) => (i.id === id ? { ...i, st: newStage } : i)));
+      showToast('Lead stage updated');
+    } catch (err) {
+      console.error(err);
+      handleFirestoreError(err, OperationType.UPDATE, `inquiries/${id}`);
+    }
   };
 
-  const toggleInquiryPaid = (id: string) => {
-    setInquiries((prev) => {
-      const inq = prev.find((i) => i.id === id);
-      const nextPaid = inq ? !inq.paid : true;
-      fetch(`/api/inquiries/${id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ paid: nextPaid }),
-      }).catch(console.error);
-
-      const next = prev.map((i) => (i.id === id ? { ...i, paid: nextPaid } : i));
-      saveToStorage('inq', next);
-      return next;
-    });
+  const toggleInquiryPaid = async (id: string) => {
+    const inq = inquiries.find((i) => i.id === id);
+    const nextPaid = inq ? !inq.paid : true;
+    try {
+      await updateDoc(doc(db, 'inquiries', id), { paid: nextPaid });
+      setInquiries((prev) => prev.map((i) => (i.id === id ? { ...i, paid: nextPaid } : i)));
+    } catch (err) {
+      console.error(err);
+      handleFirestoreError(err, OperationType.UPDATE, `inquiries/${id}`);
+    }
   };
 
-  const updateInquiryMemo = (id: string, memo: string) => {
-    fetch(`/api/inquiries/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ memo }),
-    }).catch(console.error);
-
-    setInquiries((prev) => {
-      const next = prev.map((i) => (i.id === id ? { ...i, memo } : i));
-      saveToStorage('inq', next);
-      return next;
-    });
+  const updateInquiryMemo = async (id: string, memo: string) => {
+    try {
+      await updateDoc(doc(db, 'inquiries', id), { memo });
+      setInquiries((prev) => prev.map((i) => (i.id === id ? { ...i, memo } : i)));
+    } catch (err) {
+      console.error(err);
+    }
   };
 
-  const updateInquiryDue = (id: string, due: string) => {
-    fetch(`/api/inquiries/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ due }),
-    }).catch(console.error);
-
-    setInquiries((prev) => {
-      const next = prev.map((i) => (i.id === id ? { ...i, due } : i));
-      saveToStorage('inq', next);
-      return next;
-    });
+  const updateInquiryDue = async (id: string, due: string) => {
+    try {
+      await updateDoc(doc(db, 'inquiries', id), { due });
+      setInquiries((prev) => prev.map((i) => (i.id === id ? { ...i, due } : i)));
+    } catch (err) {
+      console.error(err);
+    }
   };
 
-  const deleteInquiry = (id: string) => {
-    fetch(`/api/inquiries/${id}`, { method: 'DELETE' }).catch(console.error);
-    setInquiries((prev) => {
-      const next = prev.filter((i) => i.id !== id);
-      saveToStorage('inq', next);
-      return next;
-    });
-    showToast('Inquiry deleted');
+  const deleteInquiry = async (id: string) => {
+    try {
+      await deleteDoc(doc(db, 'inquiries', id));
+      setInquiries((prev) => prev.filter((i) => i.id !== id));
+      showToast('Inquiry removed');
+    } catch (err) {
+      console.error(err);
+      handleFirestoreError(err, OperationType.DELETE, `inquiries/${id}`);
+    }
   };
 
-  const addManualLead = (name: string, phone: string, item: string, total: number) => {
-    logInquiry(name, item, total, 'Manual Lead', phone);
+  const addManualLead = async (name: string, phone: string, item: string, total: number) => {
+    await logInquiry(name, item, total, 'Manual Lead', phone);
     showToast('Lead saved');
   };
 
   // ======================== PRODUCT ACTIONS ========================
-  const updateProductInline = (
+  const updateProductInline = async (
     id: string,
     field: 'price' | 'mrp' | 'stock' | 'vis' | 'badge',
     value: any
   ) => {
-    fetch(`/api/products/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ [field]: value }),
-    }).catch(console.error);
-
-    setProducts((prev) => {
-      const next = prev.map((p) => (p.id === id ? { ...p, [field]: value } : p));
-      saveToStorage('p', next);
-      return next;
-    });
+    try {
+      await updateDoc(doc(db, 'products', id), { [field]: value });
+      setProducts((prev) =>
+        prev.map((p) => (p.id === id ? { ...p, [field]: value } : p))
+      );
+    } catch (err) {
+      console.error('Update product inline error:', err);
+      handleFirestoreError(err, OperationType.UPDATE, `products/${id}`);
+    }
   };
 
   const saveNewProduct = async (productData: Omit<Product, 'id'>) => {
-    try {
-      const res = await fetch('/api/products', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(productData),
-      });
-
-      if (res.ok) {
-        const created: Product = await res.json();
-        setProducts((prev) => [created, ...prev]);
-        saveToStorage('p', [created, ...products]);
-        showToast(`Craft "${created.name}" created!`);
-        return;
-      }
-    } catch (e) {
-      console.error(e);
-    }
-
+    const id = `p${Date.now().toString().slice(-6)}`;
     const newProd: Product = {
       ...productData,
-      id: `p${Date.now().toString().slice(-6)}`,
+      id,
     };
-    setProducts((prev) => [newProd, ...prev]);
-    saveToStorage('p', [newProd, ...products]);
-    showToast(`Craft "${newProd.name}" created!`);
+
+    try {
+      await setDoc(doc(db, 'products', id), newProd);
+      setProducts((prev) => [newProd, ...prev]);
+      showToast(`Craft "${newProd.name}" saved to cloud!`);
+    } catch (err) {
+      console.error('Error saving new product to cloud:', err);
+      handleFirestoreError(err, OperationType.CREATE, `products/${id}`);
+    }
   };
 
   const updateProductFull = async (id: string, updated: Partial<Product>) => {
     try {
-      await fetch(`/api/products/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updated),
-      });
-    } catch (e) {
-      console.error(e);
+      await setDoc(doc(db, 'products', id), updated, { merge: true });
+      setProducts((prev) =>
+        prev.map((p) => (p.id === id ? { ...p, ...updated } : p))
+      );
+      showToast('Craft updated in cloud');
+    } catch (err) {
+      console.error('Error updating product:', err);
+      handleFirestoreError(err, OperationType.UPDATE, `products/${id}`);
     }
-
-    setProducts((prev) => {
-      const next = prev.map((p) => (p.id === id ? { ...p, ...updated } : p));
-      saveToStorage('p', next);
-      return next;
-    });
-    showToast('Craft updated');
   };
 
   const deleteProduct = async (id: string) => {
     try {
-      await fetch(`/api/products/${id}`, { method: 'DELETE' });
-    } catch (e) {
-      console.error(e);
+      await deleteDoc(doc(db, 'products', id));
+      setProducts((prev) => prev.filter((p) => p.id !== id));
+      showToast('Craft deleted from cloud');
+    } catch (err) {
+      console.error('Error deleting product:', err);
+      handleFirestoreError(err, OperationType.DELETE, `products/${id}`);
     }
-
-    setProducts((prev) => {
-      const next = prev.filter((p) => p.id !== id);
-      saveToStorage('p', next);
-      return next;
-    });
-    showToast('Craft removed');
   };
 
-  const updateProductPhotoCover = (id: string, photoIndex: number) => {
-    setProducts((prev) => {
-      const next = prev.map((p) => {
-        if (p.id !== id) return p;
-        const allPhotos = [p.img, ...(p.more || [])].filter(Boolean);
-        if (photoIndex >= 0 && photoIndex < allPhotos.length) {
-          const newCover = allPhotos[photoIndex];
-          const newMore = allPhotos.filter((_, idx) => idx !== photoIndex);
-          const updated = { ...p, img: newCover, more: newMore };
-          fetch(`/api/products/${id}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ img: newCover, more: newMore }),
-          }).catch(console.error);
-          return updated;
-        }
-        return p;
-      });
-      saveToStorage('p', next);
-      return next;
-    });
+  const updateProductPhotoCover = async (id: string, photoIndex: number) => {
+    const product = products.find((p) => p.id === id);
+    if (!product) return;
+    const all = [product.img, ...(product.more || [])].filter(Boolean);
+    if (photoIndex < 0 || photoIndex >= all.length) return;
+    const selected = all[photoIndex];
+    const newMore = all.filter((_, idx) => idx !== photoIndex);
+    await updateProductFull(id, { img: selected, more: newMore });
     showToast('Cover photo updated');
   };
 
-  const removeProductPhoto = (id: string, photoIndex: number) => {
-    setProducts((prev) => {
-      const next = prev.map((p) => {
-        if (p.id !== id) return p;
-        const allPhotos = [p.img, ...(p.more || [])].filter(Boolean);
-        if (photoIndex >= 0 && photoIndex < allPhotos.length) {
-          const remaining = allPhotos.filter((_, idx) => idx !== photoIndex);
-          const newCover = remaining[0] || 'coasters';
-          const newMore = remaining.slice(1);
-          const updated = { ...p, img: newCover, more: newMore };
-          fetch(`/api/products/${id}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ img: newCover, more: newMore }),
-          }).catch(console.error);
-          return updated;
-        }
-        return p;
-      });
-      saveToStorage('p', next);
-      return next;
-    });
+  const removeProductPhoto = async (id: string, photoIndex: number) => {
+    const product = products.find((p) => p.id === id);
+    if (!product) return;
+    const all = [product.img, ...(product.more || [])].filter(Boolean);
+    const filtered = all.filter((_, idx) => idx !== photoIndex);
+    const newImg = filtered[0] || 'coasters';
+    const newMore = filtered.slice(1);
+    await updateProductFull(id, { img: newImg, more: newMore });
     showToast('Photo removed');
   };
 
-  const addProductPhoto = (id: string, photoData: string) => {
-    setProducts((prev) => {
-      const next = prev.map((p) => {
-        if (p.id !== id) return p;
-        const currentMore = p.more || [];
-        if (currentMore.length >= 9) {
-          showToast('Maximum 10 photos reached for this product');
-          return p;
-        }
-        const newMore = [...currentMore, photoData];
-        const updated = { ...p, more: newMore };
-        fetch(`/api/products/${id}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ more: newMore }),
-        }).catch(console.error);
-        return updated;
-      });
-      saveToStorage('p', next);
-      return next;
-    });
-    showToast('Photo added to craft gallery (up to 10 photos supported)');
+  const addProductPhoto = async (id: string, photoData: string) => {
+    const product = products.find((p) => p.id === id);
+    if (!product) return;
+    const existingMore = product.more || [];
+    if (!product.img || product.img === 'coasters') {
+      await updateProductFull(id, { img: photoData });
+    } else {
+      await updateProductFull(id, { more: [...existingMore, photoData].slice(0, 9) });
+    }
+    showToast('Photo added');
   };
 
-  // ======================== CATEGORIES ========================
+  // ======================== CATEGORY ACTIONS ========================
   const addCategory = async (name: string, icon: string): Promise<boolean> => {
-    if (!name.trim()) return false;
-    const clean = name.trim();
-    if (categories.some((c) => c.name.toLowerCase() === clean.toLowerCase())) {
+    const trimmed = name.trim();
+    if (!trimmed) return false;
+    if (categories.some((c) => c.name.toLowerCase() === trimmed.toLowerCase())) {
       showToast('Category already exists');
       return false;
     }
-
+    const nextCategories = [...categories, { name: trimmed, icon: icon.trim() || 'palette' }];
     try {
-      const res = await fetch('/api/categories', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: clean, icon }),
-      });
-      if (res.ok) {
-        const newCat = await res.json();
-        setCategories((prev) => [...prev, newCat]);
-        saveToStorage('c', [...categories, newCat]);
-        showToast(`Category "${clean}" added`);
-        return true;
-      }
-    } catch (e) {
-      console.error(e);
+      await setDoc(doc(db, 'settings', 'categories'), { items: nextCategories });
+      setCategories(nextCategories);
+      showToast(`Category "${trimmed}" added!`);
+      return true;
+    } catch (err) {
+      console.error(err);
+      handleFirestoreError(err, OperationType.WRITE, 'settings/categories');
     }
-
-    const newCat = { name: clean, icon };
-    const next = [...categories, newCat];
-    setCategories(next);
-    saveToStorage('c', next);
-    showToast(`Category "${clean}" added`);
-    return true;
   };
 
   const updateCategory = async (index: number, name: string, icon: string) => {
-    const next = [...categories];
-    next[index] = { name: name.trim(), icon };
-    setCategories(next);
-    saveToStorage('c', next);
-    fetch('/api/categories', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(next),
-    }).catch(console.error);
-    showToast('Category updated');
+    const nextCategories = [...categories];
+    if (!nextCategories[index]) return;
+    nextCategories[index] = { name: name.trim(), icon: icon.trim() || 'palette' };
+    try {
+      await setDoc(doc(db, 'settings', 'categories'), { items: nextCategories });
+      setCategories(nextCategories);
+      showToast('Category updated');
+    } catch (err) {
+      console.error(err);
+      handleFirestoreError(err, OperationType.WRITE, 'settings/categories');
+    }
   };
 
   const deleteCategory = async (index: number) => {
-    const cat = categories[index];
-    if (!cat) return;
-    const next = categories.filter((_, i) => i !== index);
-    setCategories(next);
-    saveToStorage('c', next);
-    fetch(`/api/categories/${encodeURIComponent(cat.name)}`, { method: 'DELETE' }).catch(console.error);
-    showToast('Category removed');
+    const nextCategories = categories.filter((_, i) => i !== index);
+    try {
+      await setDoc(doc(db, 'settings', 'categories'), { items: nextCategories });
+      setCategories(nextCategories);
+      showToast('Category deleted');
+    } catch (err) {
+      console.error(err);
+      handleFirestoreError(err, OperationType.WRITE, 'settings/categories');
+    }
   };
 
   const moveCategory = async (index: number, direction: -1 | 1) => {
     const target = index + direction;
     if (target < 0 || target >= categories.length) return;
-    const next = [...categories];
-    const [moved] = next.splice(index, 1);
-    next.splice(target, 0, moved);
-    setCategories(next);
-    saveToStorage('c', next);
-    fetch('/api/categories', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(next),
-    }).catch(console.error);
+    const nextCategories = [...categories];
+    const temp = nextCategories[index];
+    nextCategories[index] = nextCategories[target];
+    nextCategories[target] = temp;
+    try {
+      await setDoc(doc(db, 'settings', 'categories'), { items: nextCategories });
+      setCategories(nextCategories);
+    } catch (err) {
+      console.error(err);
+      handleFirestoreError(err, OperationType.WRITE, 'settings/categories');
+    }
   };
 
-  // ======================== SHOWCASE & HERO ========================
+  // ======================== SHOWCASE / HERO / STORIES ========================
   const updateHeroSettings = async (settings: Partial<HeroSettings>) => {
     const next = { ...heroSettings, ...settings };
-    setHeroSettings(next);
-    saveToStorage('s', next);
-    fetch('/api/showcase', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ heroSettings: next }),
-    }).catch(console.error);
-    showToast('Homepage hero updated');
+    try {
+      await setDoc(doc(db, 'settings', 'hero'), next, { merge: true });
+      setHeroSettings(next);
+      showToast('Hero settings saved to cloud');
+    } catch (err) {
+      console.error(err);
+      handleFirestoreError(err, OperationType.WRITE, 'settings/hero');
+    }
   };
 
-  const updateTrendingSlotsCount = (count: number) => {
-    const nextSlots = [...heroSettings.slots];
+  const updateTrendingSlotsCount = async (count: number) => {
+    const curSlots = [...(heroSettings.slots || [])];
+    const nextSlots = curSlots.slice(0, count);
     while (nextSlots.length < count) {
       const unused = products.find((p) => !nextSlots.includes(p.id));
       if (unused) nextSlots.push(unused.id);
+      else if (products[0]) nextSlots.push(products[0].id);
       else break;
     }
-    const trimmed = nextSlots.slice(0, count);
-    const next = { ...heroSettings, slots: trimmed };
-    setHeroSettings(next);
-    saveToStorage('s', next);
-    fetch('/api/showcase', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ slots: trimmed }),
-    }).catch(console.error);
+    await updateHeroSettings({ slots: nextSlots });
   };
 
   const setTrendingSlot = async (slotIndex: number, productId: string) => {
-    const nextSlots = [...heroSettings.slots];
+    const nextSlots = [...(heroSettings.slots || [])];
     nextSlots[slotIndex] = productId;
-    const next = { ...heroSettings, slots: nextSlots };
-    setHeroSettings(next);
-    saveToStorage('s', next);
-    fetch('/api/showcase', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ slots: nextSlots }),
-    }).catch(console.error);
-    showToast('Trending product showcase updated');
+    await updateHeroSettings({ slots: nextSlots });
+    showToast('Trending craft slot updated');
   };
 
-  const resetHeroToDefault = () => {
-    setHeroSettings(INITIAL_HERO);
-    saveToStorage('s', INITIAL_HERO);
-    fetch('/api/showcase', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ heroSettings: INITIAL_HERO }),
-    }).catch(console.error);
-    showToast('Reset hero to default');
+  const resetHeroToDefault = async () => {
+    await updateHeroSettings(INITIAL_HERO);
+    showToast('Hero reset to default');
   };
 
-  const addStoryPhoto = async (img: string, cap = '') => {
+  const addStoryPhoto = async (img: string, cap?: string) => {
+    const id = `s_${Date.now()}`;
+    const newStory: StoryItem = { img, cap: cap || '' };
     try {
-      const res = await fetch('/api/stories', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ img, cap }),
-      });
-      if (res.ok) {
-        const created = await res.json();
-        setStories((prev) => [created, ...prev]);
-        saveToStorage('ig', [created, ...stories]);
-        showToast('Story photo uploaded!');
-        return;
-      }
-    } catch (e) {
-      console.error(e);
+      await setDoc(doc(db, 'stories', id), newStory);
+      setStories((prev) => [newStory, ...prev]);
+      showToast('Story added to cloud showcase!');
+    } catch (err) {
+      console.error(err);
+      handleFirestoreError(err, OperationType.CREATE, `stories/${id}`);
     }
-
-    const fallback = { img, cap, url: `https://www.instagram.com/${config.igh}` };
-    setStories((prev) => [fallback, ...prev]);
-    saveToStorage('ig', [fallback, ...stories]);
-    showToast('Story photo added');
   };
 
-  const deleteStoryItem = async (index: number) => {
-    fetch(`/api/stories/${index}`, { method: 'DELETE' }).catch(console.error);
-    setStories((prev) => {
-      const next = prev.filter((_, i) => i !== index);
-      saveToStorage('ig', next);
-      return next;
-    });
-    showToast('Story image removed');
+  const deleteStoryItem = async (storyIdOrIndex: string | number) => {
+    if (typeof storyIdOrIndex === 'number') {
+      const target = stories[storyIdOrIndex];
+      if (!target) return;
+      const nextStories = stories.filter((_, i) => i !== storyIdOrIndex);
+      setStories(nextStories);
+      try {
+        const snap = await getDocs(collection(db, 'stories'));
+        let idx = 0;
+        snap.forEach((d) => {
+          if (idx === storyIdOrIndex) {
+            deleteDoc(d.ref);
+          }
+          idx++;
+        });
+        showToast('Story removed');
+      } catch (err) {
+        console.error(err);
+      }
+    } else {
+      try {
+        await deleteDoc(doc(db, 'stories', storyIdOrIndex));
+        showToast('Story removed');
+      } catch (err) {
+        console.error(err);
+      }
+    }
   };
 
   // ======================== REVIEWS ========================
   const addReview = async (review: Review) => {
+    const id = `rev_${Date.now()}`;
     try {
-      const res = await fetch('/api/reviews', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(review),
-      });
-      if (res.ok) {
-        const created = await res.json();
-        setReviews((prev) => [created, ...prev]);
-        saveToStorage('rv', [created, ...reviews]);
-        showToast('Customer review added');
-        return;
-      }
-    } catch (e) {
-      console.error(e);
+      await setDoc(doc(db, 'reviews', id), review);
+      setReviews((prev) => [review, ...prev]);
+      showToast('Customer review saved to cloud!');
+    } catch (err) {
+      console.error(err);
+      handleFirestoreError(err, OperationType.CREATE, `reviews/${id}`);
     }
-
-    setReviews((prev) => [review, ...prev]);
-    saveToStorage('rv', [review, ...reviews]);
-    showToast('Customer review added');
   };
 
-  const deleteReview = async (index: number) => {
-    fetch(`/api/reviews/${index}`, { method: 'DELETE' }).catch(console.error);
-    setReviews((prev) => {
-      const next = prev.filter((_, i) => i !== index);
-      saveToStorage('rv', next);
-      return next;
-    });
-    showToast('Review deleted');
+  const deleteReview = async (reviewIdOrIndex: string | number) => {
+    if (typeof reviewIdOrIndex === 'number') {
+      const nextReviews = reviews.filter((_, i) => i !== reviewIdOrIndex);
+      setReviews(nextReviews);
+      try {
+        const snap = await getDocs(collection(db, 'reviews'));
+        let idx = 0;
+        snap.forEach((d) => {
+          if (idx === reviewIdOrIndex) {
+            deleteDoc(d.ref);
+          }
+          idx++;
+        });
+        showToast('Review removed');
+      } catch (err) {
+        console.error(err);
+      }
+    } else {
+      try {
+        await deleteDoc(doc(db, 'reviews', reviewIdOrIndex));
+        showToast('Review removed');
+      } catch (err) {
+        console.error(err);
+      }
+    }
   };
 
-  // ======================== SETTINGS & PUBLISHING ========================
+  // ======================== FOUNDER & SETTINGS ========================
+  const updateFounderSettings = async (settings: Partial<FounderSettings>) => {
+    const next = { ...founderSettings, ...settings };
+    try {
+      await setDoc(doc(db, 'settings', 'site'), { founder: next }, { merge: true });
+      setFounderSettings(next);
+      showToast('Founder profile saved to cloud');
+    } catch (err) {
+      console.error(err);
+      handleFirestoreError(err, OperationType.WRITE, 'settings/site');
+    }
+  };
+
+  const resetFounderToDefault = async () => {
+    await updateFounderSettings(INITIAL_FOUNDER);
+    showToast('Founder settings reset to default');
+  };
+
   const updateStoreSettings = async (wa?: string, fee?: number, free?: number, igh?: string) => {
-    const updated = {
-      ...config,
-      wa: wa !== undefined ? wa.trim() : config.wa,
-      ship: {
+    const updates: any = {};
+    if (wa !== undefined) updates.wa = wa.trim();
+    if (igh !== undefined) updates.igh = igh.trim();
+    if (fee !== undefined || free !== undefined) {
+      updates.ship = {
         fee: fee !== undefined ? fee : config.ship.fee,
         free: free !== undefined ? free : config.ship.free,
-      },
-      igh: igh !== undefined ? igh.trim() : config.igh,
-    };
-    setConfig(updated);
-    saveToStorage('cfg', updated);
-    fetch('/api/settings', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updated),
-    }).catch(console.error);
-    showToast('Settings saved');
+      };
+    }
+
+    try {
+      await setDoc(doc(db, 'settings', 'site'), updates, { merge: true });
+      setConfig((prev) => ({
+        ...prev,
+        ...updates,
+        ship: updates.ship || prev.ship,
+      }));
+      showToast('Store settings saved to cloud!');
+    } catch (err) {
+      console.error(err);
+      handleFirestoreError(err, OperationType.WRITE, 'settings/site');
+    }
   };
 
-  const updateStoreLogo = (logoUrl: string) => {
-    const updated = { ...config, logo: logoUrl };
-    setConfig(updated);
-    saveToStorage('cfg', updated);
-    fetch('/api/settings', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updated),
-    }).catch(console.error);
-    showToast('Store logo updated successfully');
-  };
-
-  const updateFounderSettings = async (settings: Partial<FounderSettings>) => {
-    setFounderSettings((prev) => {
-      const updated = { ...prev, ...settings };
-      saveToStorage('founder', updated);
-      setConfig((prevCfg) => {
-        const updatedCfg = { ...prevCfg, founder: updated };
-        saveToStorage('cfg', updatedCfg);
-        fetch('/api/settings', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(updatedCfg),
-        }).catch(console.error);
-        return updatedCfg;
-      });
-      return updated;
-    });
-    showToast("Founder's section updated successfully");
-  };
-
-  const resetFounderToDefault = () => {
-    setFounderSettings(INITIAL_FOUNDER);
-    saveToStorage('founder', INITIAL_FOUNDER);
-    setConfig((prevCfg) => {
-      const updatedCfg = { ...prevCfg, founder: INITIAL_FOUNDER };
-      saveToStorage('cfg', updatedCfg);
-      return updatedCfg;
-    });
-    showToast("Founder's section reset to default");
+  const updateStoreLogo = async (logoUrl: string) => {
+    try {
+      await setDoc(doc(db, 'settings', 'site'), { logo: logoUrl }, { merge: true });
+      setConfig((prev) => ({ ...prev, logo: logoUrl }));
+      showToast('Store logo updated');
+    } catch (err) {
+      console.error(err);
+      handleFirestoreError(err, OperationType.WRITE, 'settings/site');
+    }
   };
 
   const publishChanges = async () => {
-    setUnrecordedDraft(false);
-    showToast('All changes are published live!');
+    showToast('All changes are already saved live to Firebase Cloud!');
   };
 
-  // ======================== WHATSAPP ORDER GENERATOR ========================
+  // ======================== ONE-TIME CLOUD MIGRATION ========================
+  const uploadLocalDataToCloud = async () => {
+    setMigrationStatus({
+      running: true,
+      progress: 5,
+      message: 'Reading local browser data...',
+      complete: false,
+      error: null,
+    });
+
+    try {
+      // 1. Read localStorage
+      const localProductsRaw = localStorage.getItem('sm_p');
+      const localCategoriesRaw = localStorage.getItem('sm_c');
+      const localHeroRaw = localStorage.getItem('sm_s');
+      const localConfigRaw = localStorage.getItem('sm_cfg');
+      const localReviewsRaw = localStorage.getItem('sm_rv');
+      const localStoriesRaw = localStorage.getItem('sm_ig');
+      const localOrdersRaw = localStorage.getItem('sm_orders');
+      const localInquiriesRaw = localStorage.getItem('sm_inq');
+      const localFounderRaw = localStorage.getItem('sm_founder');
+
+      let sourceProducts: Product[] = localProductsRaw
+        ? JSON.parse(localProductsRaw)
+        : (products.length > 0 ? products : INITIAL_PRODUCTS);
+      let sourceCategories: Category[] = localCategoriesRaw
+        ? JSON.parse(localCategoriesRaw)
+        : (categories.length > 0 ? categories : INITIAL_CATEGORIES);
+      let sourceHero: HeroSettings = localHeroRaw
+        ? JSON.parse(localHeroRaw)
+        : heroSettings;
+      let sourceConfig: StoreConfig = localConfigRaw
+        ? JSON.parse(localConfigRaw)
+        : config;
+      let sourceFounder: FounderSettings = localFounderRaw
+        ? JSON.parse(localFounderRaw)
+        : founderSettings;
+      let sourceReviews: Review[] = localReviewsRaw
+        ? JSON.parse(localReviewsRaw)
+        : reviews;
+      let sourceStories: StoryItem[] = localStoriesRaw
+        ? JSON.parse(localStoriesRaw)
+        : stories;
+      let sourceOrders: Order[] = localOrdersRaw
+        ? JSON.parse(localOrdersRaw)
+        : orders;
+      let sourceInquiries: Inquiry[] = localInquiriesRaw
+        ? JSON.parse(localInquiriesRaw)
+        : inquiries;
+
+      setMigrationStatus((s) => ({
+        ...s,
+        progress: 20,
+        message: 'Uploading and compressing local craft photos to Firebase Storage...',
+      }));
+
+      // 2. Process and upload base64 images in products to Storage
+      const migratedProducts: Product[] = [];
+      let photoIdx = 0;
+      for (const p of sourceProducts) {
+        let cleanImg = p.img;
+        if (isBase64DataUrl(cleanImg)) {
+          try {
+            setMigrationStatus((s) => ({
+              ...s,
+              message: `Uploading photo for "${p.name}" to Firebase Storage...`,
+            }));
+            cleanImg = await uploadImageToStorage(cleanImg, 'products', `prod_${p.id}_cover.jpg`);
+          } catch (e) {
+            console.warn('Storage upload error for product cover:', e);
+          }
+        }
+
+        const cleanMore: string[] = [];
+        if (Array.isArray(p.more)) {
+          for (let mIdx = 0; mIdx < p.more.length; mIdx++) {
+            let mSrc = p.more[mIdx];
+            if (isBase64DataUrl(mSrc)) {
+              try {
+                mSrc = await uploadImageToStorage(mSrc, 'products', `prod_${p.id}_gal_${mIdx}.jpg`);
+              } catch (e) {
+                console.warn('Storage upload error for gallery:', e);
+              }
+            }
+            cleanMore.push(mSrc);
+          }
+        }
+
+        migratedProducts.push({
+          ...p,
+          img: cleanImg,
+          more: cleanMore,
+        });
+        photoIdx++;
+      }
+
+      setMigrationStatus((s) => ({
+        ...s,
+        progress: 50,
+        message: 'Saving products to Firestore...',
+      }));
+
+      // 3. Save products to Firestore
+      for (const p of migratedProducts) {
+        await setDoc(doc(db, 'products', p.id), p);
+      }
+
+      setMigrationStatus((s) => ({
+        ...s,
+        progress: 70,
+        message: 'Saving site configuration, categories, and hero...',
+      }));
+
+      // 4. Save categories
+      await setDoc(doc(db, 'settings', 'categories'), { items: sourceCategories });
+
+      // 5. Save hero settings
+      await setDoc(doc(db, 'settings', 'hero'), sourceHero);
+
+      // 6. Check founder photo
+      let cleanFounderImg = sourceFounder.img;
+      if (isBase64DataUrl(cleanFounderImg)) {
+        try {
+          cleanFounderImg = await uploadImageToStorage(cleanFounderImg, 'founder', 'founder_photo.jpg');
+        } catch (e) {
+          console.warn('Founder image upload error:', e);
+        }
+      }
+      sourceFounder.img = cleanFounderImg;
+
+      // 7. Save site settings
+      await setDoc(doc(db, 'settings', 'site'), {
+        wa: sourceConfig.wa,
+        ship: sourceConfig.ship,
+        igh: sourceConfig.igh,
+        logo: sourceConfig.logo || 'logo',
+        founder: sourceFounder,
+        adminEmail: sourceConfig.adminEmail || 'admin@example.com',
+      });
+
+      setMigrationStatus((s) => ({
+        ...s,
+        progress: 85,
+        message: 'Syncing reviews, stories, and orders...',
+      }));
+
+      // 8. Save reviews
+      for (let rIdx = 0; rIdx < sourceReviews.length; rIdx++) {
+        await setDoc(doc(db, 'reviews', `rev_${rIdx + 1}`), sourceReviews[rIdx]);
+      }
+
+      // 9. Save stories (upload base64 if needed)
+      for (let sIdx = 0; sIdx < sourceStories.length; sIdx++) {
+        const item = sourceStories[sIdx];
+        let sImg = item.img;
+        if (isBase64DataUrl(sImg)) {
+          try {
+            sImg = await uploadImageToStorage(sImg, 'stories', `story_${sIdx + 1}.jpg`);
+          } catch {}
+        }
+        await setDoc(doc(db, 'stories', `story_${sIdx + 1}`), { ...item, img: sImg });
+      }
+
+      // 10. Save existing orders
+      for (const o of sourceOrders) {
+        await setDoc(doc(db, 'orders', o.id), o);
+      }
+
+      // 11. Save inquiries
+      for (const inq of sourceInquiries) {
+        await setDoc(doc(db, 'inquiries', inq.id), inq);
+      }
+
+      // 12. Cleanup legacy localStorage keys (RETAINING ONLY CART 'sm_bag' and favorites 'sm_fav')
+      const keysToRemove = [
+        'sm_p',
+        'sm_c',
+        'sm_s',
+        'sm_cfg',
+        'sm_rv',
+        'sm_ig',
+        'sm_orders',
+        'sm_inq',
+        'sm_founder',
+      ];
+      keysToRemove.forEach((k) => localStorage.removeItem(k));
+
+      setMigrationStatus({
+        running: false,
+        progress: 100,
+        message: 'Success! All local data & photos migrated to Firebase Firestore & Storage.',
+        complete: true,
+        error: null,
+      });
+
+      showToast('All local data successfully uploaded to Firebase cloud!');
+    } catch (err: any) {
+      console.error('Migration failed:', err);
+      setMigrationStatus({
+        running: false,
+        progress: 0,
+        message: 'Migration failed',
+        complete: false,
+        error: err?.message || 'Unknown error during migration',
+      });
+      showToast('Migration failed. Check Firebase console permissions.');
+    }
+  };
+
+  // WhatsApp helper
   const generateWhatsAppOrderMessage = (
     items: { name: string; q: number; price: number; note?: string; img?: string }[],
     total: number,
@@ -1147,7 +1408,7 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     window.open(url, '_blank', 'noopener,noreferrer');
   };
 
-  // Live Metrics Calculation for Admin
+  // Live Metrics
   const confirmedOrders = orders.filter((o) => o.status !== 'Inquiry');
   const totalRev = confirmedOrders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
   const metrics: DashboardMetrics = {
@@ -1189,6 +1450,11 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         lightboxIndex,
         openLightbox,
         closeLightbox,
+        isLoading,
+        loadError,
+        retryLoading,
+        uploadLocalDataToCloud,
+        migrationStatus,
         orderModalData,
         openOrderModal,
         closeOrderModal,
@@ -1206,6 +1472,7 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         toggleFavorite,
         isFavorite,
         createOrder,
+        lookupOrder,
         updateOrderStatus,
         toggleOrderPaid,
         updateOrderTracking,

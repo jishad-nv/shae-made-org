@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useStore } from '../context/StoreContext';
 import { auth } from '../firebase';
 import { signOut } from 'firebase/auth';
+import { uploadImageToStorage } from '../utils/imageUpload';
 import { STAGES, INITIAL_FOUNDER } from '../data/initialData';
 import { IMAGES } from '../data/images';
 import { Product, Inquiry, Review, Order, FounderSettings } from '../types';
@@ -21,6 +22,9 @@ export const AdminView: React.FC<{ activeTab?: string }> = ({ activeTab = 'ov' }
     publishChanges,
     navigateTo,
     showToast,
+    isLoading,
+    uploadLocalDataToCloud,
+    migrationStatus,
     logInquiry,
     addInstagramLead,
     updateInquiryStage,
@@ -172,29 +176,195 @@ export const AdminView: React.FC<{ activeTab?: string }> = ({ activeTab = 'ov' }
     { key: 'frame', label: 'Floral Frame' },
   ];
 
-  // Helper image shrinker (high quality, compresses to web JPEG)
-  const shrinkImage = (file: File, maxDim: number, cb: (dataUrl: string) => void) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const scale = Math.min(1, maxDim / img.width);
-        canvas.width = img.width * scale;
-        canvas.height = img.height * scale;
-        const ctx = canvas.getContext('2d');
-        ctx?.drawImage(img, 0, 0, canvas.width, canvas.height);
-        cb(canvas.toDataURL('image/jpeg', 0.85));
+  const [isUploadingPhoto, setIsUploadingPhoto] = useState<boolean>(false);
+
+  // Compress & upload image directly to Firebase Storage (max 1200px, WebP/JPG under 300KB)
+  const uploadPhotoToCloud = async (file: File, folder = 'products'): Promise<string> => {
+    setIsUploadingPhoto(true);
+    try {
+      const url = await uploadImageToStorage(file, folder);
+      showToast('Photo uploaded to Firebase Storage!');
+      return url;
+    } catch (err: any) {
+      console.error('Error uploading photo to storage:', err);
+      showToast('Photo upload failed: ' + (err.message || 'Error'));
+      throw err;
+    } finally {
+      setIsUploadingPhoto(false);
+    }
+  };
+
+  const ADMIN_MENU_ITEMS = [
+    { tab: 'ov', icon: 'dashboard', label: 'Dashboard / Overview', shortLabel: 'Dashboard' },
+    { tab: 'orders', icon: 'local_shipping', label: 'Orders Pipeline', count: newOrdersCount, shortLabel: 'Orders' },
+    { tab: 'inq', icon: 'chat_bubble_outline', label: 'Inquiries & Leads', count: newInquiriesCount, shortLabel: 'Inquiries' },
+    { tab: 'prod', icon: 'inventory_2', label: 'Product Manager', shortLabel: 'Products' },
+    { tab: 'cat', icon: 'category', label: 'Category Manager', shortLabel: 'Categories' },
+    { tab: 'show', icon: 'auto_awesome', label: 'Showcase & Home', shortLabel: 'Showcase' },
+    { tab: 'founder', icon: 'face', label: "Founder's Section", shortLabel: 'Founder' },
+    { tab: 'rev', icon: 'rate_review', label: 'Customer Reviews', shortLabel: 'Reviews' },
+    { tab: 'set', icon: 'settings', label: 'Store Settings', shortLabel: 'Settings' },
+  ];
+
+  const currentMenuItem =
+    ADMIN_MENU_ITEMS.find((item) => item.tab === currentTab) || ADMIN_MENU_ITEMS[0];
+
+  const [isDrawerOpen, setIsDrawerOpen] = useState<boolean>(false);
+
+  // Lock body scroll when mobile drawer is open
+  useEffect(() => {
+    if (isDrawerOpen) {
+      const prevOverflow = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+      return () => {
+        document.body.style.overflow = prevOverflow;
       };
-      img.src = reader.result as string;
+    }
+  }, [isDrawerOpen]);
+
+  // Close drawer on Escape key
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isDrawerOpen) {
+        setIsDrawerOpen(false);
+      }
     };
-    reader.readAsDataURL(file);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isDrawerOpen]);
+
+  const handleLogout = async () => {
+    if (window.confirm('Are you sure you want to log out of the admin panel?')) {
+      await signOut(auth);
+      window.location.reload();
+    }
   };
 
   return (
-    <div className="min-h-screen bg-[#fcf9f4] flex flex-col md:grid md:grid-cols-[230px_minmax(0,1fr)]">
-      {/* Sidebar Navigation */}
-      <aside className="bg-[#2b352a] border-b md:border-b-0 md:border-r border-[#212a20] p-3 sm:p-4 md:sticky md:top-0 md:h-screen flex flex-row md:flex-col gap-1 overflow-x-auto scrollbar-none z-20">
+    <div className="min-h-screen bg-[#fcf9f4] flex flex-col lg:grid lg:grid-cols-[240px_minmax(0,1fr)]">
+      {/* 1. MOBILE TOP BAR (Sticky, visible only < 1024px) */}
+      <header className="lg:hidden sticky top-0 z-30 bg-[#2b352a] text-[#fcf9f4] border-b border-[#212a20] px-2 sm:px-3 py-1 flex items-center justify-between shadow-xs">
+        {/* Hamburger Icon with >= 44x44px tap target */}
+        <button
+          onClick={() => setIsDrawerOpen(true)}
+          className="w-11 h-11 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-xl text-[#fcf9f4] hover:bg-white/10 active:bg-white/20 transition-colors cursor-pointer shrink-0"
+          aria-label="Open Admin Menu"
+        >
+          <span className="material-icon text-2xl">menu</span>
+        </button>
+
+        {/* Current Section Title */}
+        <h1 className="text-xs sm:text-sm font-bold font-luxury-serif text-[#fcf9f4] truncate text-center px-2 flex-1 tracking-wide">
+          {currentMenuItem.label}
+        </h1>
+
+        {/* Logout Icon with >= 44x44px tap target */}
+        <button
+          onClick={handleLogout}
+          className="w-11 h-11 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-xl text-red-300 hover:text-white hover:bg-white/10 active:bg-white/20 transition-colors cursor-pointer shrink-0"
+          aria-label="Logout"
+          title="Logout"
+        >
+          <span className="material-icon text-xl">logout</span>
+        </button>
+      </header>
+
+      {/* 2. MOBILE SLIDE-OUT DRAWER OVERLAY (< 1024px) */}
+      <div
+        className={`lg:hidden fixed inset-0 z-40 bg-black/60 backdrop-blur-xs transition-opacity duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${
+          isDrawerOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
+        }`}
+        onClick={() => setIsDrawerOpen(false)}
+        aria-hidden="true"
+      />
+
+      {/* 2. MOBILE SLIDE-OUT DRAWER (< 1024px) */}
+      <aside
+        id="admin-mobile-drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Admin Navigation Menu"
+        className={`lg:hidden fixed top-0 bottom-0 left-0 z-50 w-[80vw] max-w-[300px] bg-[#2b352a] text-[#fcf9f4] shadow-2xl flex flex-col p-4 transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${
+          isDrawerOpen ? 'translate-x-0' : '-translate-x-full'
+        }`}
+      >
+        {/* Drawer Header with Close Button */}
+        <div className="flex items-center justify-between pb-3 mb-2 border-b border-white/10 shrink-0">
+          <div className="flex items-center gap-2 text-[#fcf9f4] font-luxury-serif text-lg font-bold">
+            <img
+              src={config.logo ? (IMAGES[config.logo] || config.logo) : IMAGES.logo}
+              alt="Shae.made"
+              className="w-7 h-7 object-contain rounded-full"
+            />
+            <span>Shae.made</span>
+          </div>
+
+          <button
+            onClick={() => setIsDrawerOpen(false)}
+            className="w-11 h-11 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-xl text-[#e8eee3]/80 hover:bg-white/10 hover:text-white transition-colors cursor-pointer"
+            aria-label="Close Admin Menu"
+          >
+            <span className="material-icon text-2xl">close</span>
+          </button>
+        </div>
+
+        {/* Drawer Menu Items List */}
+        <div className="flex-1 overflow-y-auto scrollbar-none py-1 space-y-1">
+          {ADMIN_MENU_ITEMS.map((item) => {
+            const isActive = currentTab === item.tab;
+            return (
+              <button
+                key={item.tab}
+                onClick={() => {
+                  navigateTo(`admin/${item.tab}`);
+                  setIsDrawerOpen(false);
+                }}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 min-h-[44px] rounded-xl text-xs sm:text-sm font-semibold transition-colors text-left cursor-pointer ${
+                  isActive
+                    ? 'bg-[#59684c] text-white shadow-xs font-bold'
+                    : 'text-[#e8eee3]/80 hover:bg-white/10 hover:text-white'
+                }`}
+              >
+                <span className="material-icon text-xl">{item.icon}</span>
+                <span className="flex-1">{item.label}</span>
+                {item.count ? (
+                  <span className="ml-auto px-1.5 py-0.5 bg-[#d97a53] text-white text-[10px] font-bold rounded-full">
+                    {item.count}
+                  </span>
+                ) : null}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Drawer Footer Actions */}
+        <div className="pt-3 border-t border-white/10 shrink-0 space-y-1">
+          <button
+            onClick={() => {
+              setIsDrawerOpen(false);
+              navigateTo('');
+            }}
+            className="w-full flex items-center gap-2.5 px-3 py-2.5 min-h-[44px] text-xs font-semibold text-[#e8eee3]/80 hover:text-white rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
+          >
+            <span className="material-icon text-lg">storefront</span>
+            <span>View Storefront</span>
+          </button>
+
+          <button
+            onClick={async () => {
+              setIsDrawerOpen(false);
+              await handleLogout();
+            }}
+            className="w-full flex items-center gap-2.5 px-3 py-2.5 min-h-[44px] text-xs font-semibold text-red-300 hover:text-white rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
+          >
+            <span className="material-icon text-lg">logout</span>
+            <span>Logout</span>
+          </button>
+        </div>
+      </aside>
+
+      {/* 4. DESKTOP PERMANENT SIDEBAR (>= 1024px) */}
+      <aside className="hidden lg:flex lg:flex-col bg-[#2b352a] border-r border-[#212a20] p-4 lg:sticky lg:top-0 lg:h-screen w-[240px] shrink-0 gap-1 overflow-y-auto scrollbar-none z-20">
         <div className="flex items-center gap-2 p-2 mb-2 text-[#fcf9f4] font-luxury-serif text-xl sm:text-2xl font-bold whitespace-nowrap shrink-0">
           <img
             src={config.logo ? (IMAGES[config.logo] || config.logo) : IMAGES.logo}
@@ -204,17 +374,7 @@ export const AdminView: React.FC<{ activeTab?: string }> = ({ activeTab = 'ov' }
           Shae.made
         </div>
 
-        {[
-          { tab: 'ov', icon: 'dashboard', label: 'Dashboard / Overview' },
-          { tab: 'orders', icon: 'local_shipping', label: 'Orders Pipeline', count: newOrdersCount },
-          { tab: 'inq', icon: 'chat_bubble_outline', label: 'Inquiries & Leads', count: newInquiriesCount },
-          { tab: 'prod', icon: 'inventory_2', label: 'Product Manager' },
-          { tab: 'cat', icon: 'category', label: 'Category Manager' },
-          { tab: 'show', icon: 'auto_awesome', label: 'Showcase & Home' },
-          { tab: 'founder', icon: 'face', label: "Founder's Section" },
-          { tab: 'rev', icon: 'rate_review', label: 'Customer Reviews' },
-          { tab: 'set', icon: 'settings', label: 'Store Settings' },
-        ].map((item) => {
+        {ADMIN_MENU_ITEMS.map((item) => {
           const isActive = currentTab === item.tab;
           return (
             <button
@@ -237,12 +397,9 @@ export const AdminView: React.FC<{ activeTab?: string }> = ({ activeTab = 'ov' }
           );
         })}
 
-        <div className="hidden md:block mt-auto pt-4 border-t border-white/10">
+        <div className="mt-auto pt-4 border-t border-white/10">
           <button
-            onClick={async () => {
-              await signOut(auth);
-              window.location.reload();
-            }}
+            onClick={handleLogout}
             className="w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold text-red-300 hover:text-white rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
           >
             <span className="material-icon text-lg">logout</span>
@@ -259,7 +416,7 @@ export const AdminView: React.FC<{ activeTab?: string }> = ({ activeTab = 'ov' }
       </aside>
 
       {/* Main Admin Workspace */}
-      <main className="p-3.5 sm:p-6 lg:p-7 max-w-5xl w-full">
+      <main className="p-3.5 sm:p-6 lg:p-7 max-w-5xl w-full min-w-0 pb-28 lg:pb-7 overflow-x-hidden">
         {/* Top Status & Storefront Link Bar */}
         <div className="flex items-center justify-between gap-3 p-3 sm:px-4 rounded-xl border mb-5 text-xs sm:text-sm font-bold bg-white border-[#eee7dc] text-[#59684c] shadow-xs">
           <span className="flex items-center gap-2">
@@ -294,6 +451,84 @@ export const AdminView: React.FC<{ activeTab?: string }> = ({ activeTab = 'ov' }
               <span className="text-xs text-[#737c6e] font-semibold">
                 Live Studio Metrics
               </span>
+            </div>
+
+            {/* Cloud Data Persistence & Migration Card */}
+            <div className="craft-card p-4 sm:p-5 bg-gradient-to-br from-[#ffffff] via-[#fcf9f4] to-[#e8eee3] border-2 border-[#59684c]/30 shadow-xs space-y-3">
+              <div className="flex items-start justify-between flex-wrap gap-3">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="inline-flex items-center gap-1.5 text-xs font-bold text-[#59684c] bg-[#e8eee3] px-2.5 py-0.5 rounded-full">
+                      <span className="material-icon text-sm">cloud_sync</span>
+                      <span>Firebase Realtime Cloud Database & Storage Active</span>
+                    </span>
+                    <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                      Live Multi-Device Sync
+                    </span>
+                  </div>
+                  <h3 className="font-luxury-serif text-lg font-bold text-[#2b352a]">
+                    Cloud Data Persistence & Sync
+                  </h3>
+                  <p className="text-xs text-[#737c6e] max-w-xl leading-relaxed">
+                    All products, craft photos, orders, reviews, and site settings are stored in live Firebase Firestore and Cloud Storage. All visitors on any phone or device see your latest products and changes live without redeploying.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  disabled={migrationStatus.running}
+                  onClick={() => {
+                    if (window.confirm("Upload all your browser's local products, photos, and settings to Firebase Cloud so other devices can see them?")) {
+                      uploadLocalDataToCloud();
+                    }
+                  }}
+                  className={`btn-order text-xs py-2 px-4 shadow-sm flex items-center gap-2 cursor-pointer ${
+                    migrationStatus.running ? 'opacity-60 cursor-not-allowed' : ''
+                  }`}
+                >
+                  <span className="material-icon text-sm">
+                    {migrationStatus.running ? 'sync' : 'cloud_upload'}
+                  </span>
+                  <span>
+                    {migrationStatus.running
+                      ? 'Uploading to Cloud...'
+                      : 'Upload my local data to cloud'}
+                  </span>
+                </button>
+              </div>
+
+              {/* Migration Progress Indicator */}
+              {migrationStatus.running && (
+                <div className="p-3 rounded-xl bg-white border border-[#eee7dc] space-y-2">
+                  <div className="flex justify-between text-xs font-bold text-[#59684c]">
+                    <span>{migrationStatus.message}</span>
+                    <span>{migrationStatus.progress}%</span>
+                  </div>
+                  <div className="w-full h-2 rounded-full bg-[#f5efe6] overflow-hidden">
+                    <div
+                      className="h-full bg-[#59684c] rounded-full transition-all duration-300"
+                      style={{ width: `${migrationStatus.progress}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {migrationStatus.complete && (
+                <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-center justify-between">
+                  <span className="flex items-center gap-1.5 font-bold">
+                    <span className="material-icon text-base">check_circle</span>
+                    <span>{migrationStatus.message}</span>
+                  </span>
+                  <span className="text-[11px] font-semibold">Firestore & Storage Live</span>
+                </div>
+              )}
+
+              {migrationStatus.error && (
+                <div className="p-2.5 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs flex items-center gap-1.5">
+                  <span className="material-icon text-base">error_outline</span>
+                  <span>{migrationStatus.error}</span>
+                </div>
+              )}
             </div>
 
             {/* Core Metrics Cards (Confirmed Orders, AOV, Total Revenue, Overall Metrics) */}
@@ -1017,30 +1252,39 @@ export const AdminView: React.FC<{ activeTab?: string }> = ({ activeTab = 'ov' }
 
                   <div className="flex items-center gap-2 flex-wrap">
                     <label className="btn-primary text-xs py-1.5 px-3 cursor-pointer">
-                      <span className="material-icon text-sm">upload_file</span>
-                      <span>Upload Multiple Photos (Device)</span>
+                      <span className="material-icon text-sm">cloud_upload</span>
+                      <span>{isUploadingPhoto ? 'Uploading to Storage...' : 'Upload Photos (Cloud Storage)'}</span>
                       <input
                         type="file"
                         accept="image/*"
                         multiple
+                        disabled={isUploadingPhoto}
                         hidden
-                        onChange={(e) => {
+                        onChange={async (e) => {
                           const files = Array.from(e.target.files || []);
-                          files.slice(0, 10).forEach((file, index) => {
-                            shrinkImage(file, 900, (dataUrl) => {
-                              if (index === 0 && !newProductState.img) {
-                                setNewProductState((s) => ({ ...s, img: dataUrl }));
-                              } else {
-                                setNewProductState((s) => ({
-                                  ...s,
-                                  img: s.img || dataUrl,
-                                  more: [...(s.more || []), dataUrl].slice(0, 9),
-                                }));
-                              }
-                            });
-                          });
-                          showToast(`${files.length} photo(s) uploaded`);
-                          e.target.value = '';
+                          if (files.length === 0) return;
+                          showToast(`Uploading ${files.length} photo(s) to Firebase Storage...`);
+                          try {
+                            for (let i = 0; i < Math.min(files.length, 10); i++) {
+                              const cloudUrl = await uploadPhotoToCloud(files[i], 'products');
+                              setNewProductState((s) => {
+                                if (i === 0 && (!s.img || s.img === 'coasters')) {
+                                  return { ...s, img: cloudUrl };
+                                } else {
+                                  return {
+                                    ...s,
+                                    img: s.img && s.img !== 'coasters' ? s.img : cloudUrl,
+                                    more: [...(s.more || []), cloudUrl].slice(0, 9),
+                                  };
+                                }
+                              });
+                            }
+                            showToast(`${files.length} photo(s) uploaded to Cloud Storage!`);
+                          } catch (err: any) {
+                            showToast('Upload error: ' + (err.message || 'Failed'));
+                          } finally {
+                            e.target.value = '';
+                          }
                         }}
                       />
                     </label>
@@ -1285,19 +1529,28 @@ export const AdminView: React.FC<{ activeTab?: string }> = ({ activeTab = 'ov' }
 
                         {allPhotos.length < 10 && (
                           <label className="w-18 h-18 rounded-xl border-2 border-dashed border-[#59684c]/40 bg-white flex flex-col items-center justify-center text-[#59684c] cursor-pointer text-xs font-semibold">
-                            <span className="material-icon text-xl">add_a_photo</span>
+                            <span className="material-icon text-xl">cloud_upload</span>
                             <span className="text-[9.5px]">Upload</span>
                             <input
                               type="file"
                               accept="image/*"
                               multiple
                               hidden
-                              onChange={(e) => {
+                              onChange={async (e) => {
                                 const files = Array.from(e.target.files || []);
-                                files.forEach((f) => {
-                                  shrinkImage(f, 900, (dataUrl) => addProductPhoto(editForm.id, dataUrl));
-                                });
-                                e.target.value = '';
+                                if (files.length === 0) return;
+                                showToast(`Uploading ${files.length} photo(s) to Cloud Storage...`);
+                                try {
+                                  for (const f of files) {
+                                    const cloudUrl = await uploadPhotoToCloud(f, 'products');
+                                    await addProductPhoto(editForm.id, cloudUrl);
+                                  }
+                                  showToast('Photos uploaded to Storage!');
+                                } catch (err: any) {
+                                  showToast('Upload error: ' + (err.message || 'Error'));
+                                } finally {
+                                  e.target.value = '';
+                                }
                               }}
                             />
                           </label>
@@ -1715,18 +1968,21 @@ export const AdminView: React.FC<{ activeTab?: string }> = ({ activeTab = 'ov' }
 
                 <div className="space-y-2 flex-1 min-w-[200px]">
                   <label className="btn-secondary text-xs py-2 px-4 cursor-pointer inline-flex items-center gap-1.5">
-                    <span className="material-icon text-base">upload</span>
+                    <span className="material-icon text-base">cloud_upload</span>
                     <span>Upload New Hero Image</span>
                     <input
                       type="file"
                       accept="image/*"
                       hidden
-                      onChange={(e) => {
+                      onChange={async (e) => {
                         const file = e.target.files?.[0];
                         if (file) {
-                          shrinkImage(file, 900, (dataUrl) => {
-                            updateHeroSettings({ img: dataUrl });
-                          });
+                          try {
+                            const url = await uploadPhotoToCloud(file, 'hero');
+                            await updateHeroSettings({ img: url });
+                          } catch (err: any) {
+                            showToast('Failed to upload hero image');
+                          }
                         }
                         e.target.value = '';
                       }}
@@ -1815,15 +2071,22 @@ export const AdminView: React.FC<{ activeTab?: string }> = ({ activeTab = 'ov' }
                 </div>
 
                 <label className="btn-primary text-xs py-1.5 px-3 cursor-pointer">
-                  <span className="material-icon text-sm">add_photo_alternate</span>
+                  <span className="material-icon text-sm">cloud_upload</span>
                   <span>Upload Story Image</span>
                   <input
                     type="file"
                     accept="image/*"
                     hidden
-                    onChange={(e) => {
+                    onChange={async (e) => {
                       const f = e.target.files?.[0];
-                      if (f) shrinkImage(f, 900, (dataUrl) => addStoryPhoto(dataUrl, 'Craft story'));
+                      if (f) {
+                        try {
+                          const url = await uploadPhotoToCloud(f, 'stories');
+                          await addStoryPhoto(url, 'Craft story');
+                        } catch (err: any) {
+                          showToast('Story photo upload failed');
+                        }
+                      }
                       e.target.value = '';
                     }}
                   />
@@ -2016,18 +2279,21 @@ export const AdminView: React.FC<{ activeTab?: string }> = ({ activeTab = 'ov' }
                 <div className="space-y-3 flex-1 w-full">
                   <div className="flex flex-wrap items-center gap-2">
                     <label className="btn-primary text-xs py-2 px-4 cursor-pointer inline-flex items-center gap-1.5 shadow-xs">
-                      <span className="material-icon text-base">upload</span>
+                      <span className="material-icon text-base">cloud_upload</span>
                       <span>Upload Founder Photo</span>
                       <input
                         type="file"
                         accept="image/*"
                         hidden
-                        onChange={(e) => {
+                        onChange={async (e) => {
                           const file = e.target.files?.[0];
                           if (file) {
-                            shrinkImage(file, 700, (dataUrl) => {
-                              setFounderForm((prev) => ({ ...prev, img: dataUrl }));
-                            });
+                            try {
+                              const url = await uploadPhotoToCloud(file, 'founder');
+                              setFounderForm((prev) => ({ ...prev, img: url }));
+                            } catch (err: any) {
+                              showToast('Founder photo upload failed');
+                            }
                           }
                           e.target.value = '';
                         }}
@@ -2461,18 +2727,21 @@ export const AdminView: React.FC<{ activeTab?: string }> = ({ activeTab = 'ov' }
                 </div>
 
                 <label className="btn-secondary text-xs py-2 px-4 cursor-pointer inline-flex items-center gap-1.5">
-                  <span className="material-icon text-base">upload</span>
+                  <span className="material-icon text-base">cloud_upload</span>
                   <span>Upload Logo Image</span>
                   <input
                     type="file"
                     accept="image/*"
                     hidden
-                    onChange={(e) => {
+                    onChange={async (e) => {
                       const file = e.target.files?.[0];
                       if (file) {
-                        shrinkImage(file, 400, (dataUrl) => {
-                          updateStoreLogo(dataUrl);
-                        });
+                        try {
+                          const url = await uploadPhotoToCloud(file, 'branding');
+                          await updateStoreLogo(url);
+                        } catch (err: any) {
+                          showToast('Logo upload failed');
+                        }
                       }
                       e.target.value = '';
                     }}
@@ -2543,6 +2812,52 @@ export const AdminView: React.FC<{ activeTab?: string }> = ({ activeTab = 'ov' }
           </div>
         )}
       </main>
+
+      {/* 3. MOBILE FIXED BOTTOM TAB BAR (Visible only < 1024px) */}
+      <nav
+        aria-label="Admin quick tabs"
+        className="lg:hidden fixed bottom-0 left-0 right-0 z-30 bg-[#2b352a]/95 backdrop-blur-md border-t border-white/10 px-2 py-1.5 flex items-center justify-around shadow-lg safe-area-pb"
+      >
+        {[
+          { tab: 'ov', icon: 'dashboard', label: 'Dashboard' },
+          { tab: 'prod', icon: 'inventory_2', label: 'Products' },
+          { tab: 'set', icon: 'settings', label: 'Settings' },
+        ].map((item) => {
+          const isActive = currentTab === item.tab;
+          return (
+            <button
+              key={item.tab}
+              onClick={() => navigateTo(`admin/${item.tab}`)}
+              className={`flex-1 min-h-[44px] flex flex-col items-center justify-center py-1 px-1 rounded-xl transition-colors cursor-pointer ${
+                isActive
+                  ? 'bg-[#59684c] text-white shadow-xs font-bold'
+                  : 'text-[#e8eee3]/75 hover:bg-white/10 hover:text-white'
+              }`}
+            >
+              <span className="material-icon text-lg leading-none">{item.icon}</span>
+              <span className="text-[10px] tracking-wide mt-1 leading-none">{item.label}</span>
+            </button>
+          );
+        })}
+
+        {/* More Button: Opens Drawer */}
+        <button
+          onClick={() => setIsDrawerOpen(true)}
+          className={`flex-1 min-h-[44px] flex flex-col items-center justify-center py-1 px-1 rounded-xl transition-colors cursor-pointer ${
+            !['ov', 'prod', 'set'].includes(currentTab)
+              ? 'bg-[#59684c] text-white shadow-xs font-bold'
+              : 'text-[#e8eee3]/75 hover:bg-white/10 hover:text-white'
+          }`}
+          aria-label="More admin menu sections"
+        >
+          <span className="material-icon text-lg leading-none">
+            {!['ov', 'prod', 'set'].includes(currentTab) ? currentMenuItem.icon : 'more_horiz'}
+          </span>
+          <span className="text-[10px] tracking-wide mt-1 leading-none">
+            {!['ov', 'prod', 'set'].includes(currentTab) ? currentMenuItem.shortLabel : 'More'}
+          </span>
+        </button>
+      </nav>
     </div>
   );
 };
