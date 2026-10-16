@@ -77,6 +77,7 @@ export const ProductDetailView: React.FC<{ productId: string }> = ({ productId }
               <img
                 src={gallery[activePhotoIndex] || gallery[0]}
                 alt={product.name}
+                loading="lazy"
                 className="w-full h-full object-cover"
               />
 

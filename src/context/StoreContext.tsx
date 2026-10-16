@@ -80,6 +80,9 @@ interface StoreContextType {
   isLoading: boolean;
   loadError: string | null;
   retryLoading: () => void;
+  lastSyncTime: string | null;
+  lastSyncError: string | null;
+  isCloudConnected: boolean;
 
   // Migration from local storage to Firebase cloud
   uploadLocalDataToCloud: () => Promise<void>;
@@ -219,13 +222,19 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [retryTrigger, setRetryTrigger] = useState<number>(0);
+  const [lastSyncTime, setLastSyncTime] = useState<string | null>(() => {
+    return new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  });
+  const [lastSyncError, setLastSyncError] = useState<string | null>(null);
+  const [isCloudConnected, setIsCloudConnected] = useState<boolean>(true);
 
   // Migration status
+  const isInitiallyMigrated = typeof window !== 'undefined' && localStorage.getItem('sm_cloud_migrated_done') === 'true';
   const [migrationStatus, setMigrationStatus] = useState<MigrationStatus>({
     running: false,
-    progress: 0,
-    message: '',
-    complete: false,
+    progress: isInitiallyMigrated ? 100 : 0,
+    message: isInitiallyMigrated ? 'Local data already migrated to Firestore' : '',
+    complete: isInitiallyMigrated,
     error: null,
   });
 
@@ -292,6 +301,18 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   };
   const closeOrderModal = () => setOrderModalData(null);
 
+  // Admin auth assertion
+  const requireAdmin = (): boolean => {
+    if (!auth.currentUser) {
+      const msg = 'Please log in again (Admin unauthenticated or session expired)';
+      showToast(msg);
+      setLastSyncError('auth/unauthenticated: Please log in again');
+      navigateTo('admin');
+      return false;
+    }
+    return true;
+  };
+
   // Auth state listener
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (user) => {
@@ -321,18 +342,41 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       const unsubProducts = onSnapshot(
         collection(db, 'products'),
         (snapshot) => {
+          setIsCloudConnected(true);
+          setLastSyncError(null);
           const list: Product[] = [];
           snapshot.forEach((d) => {
             list.push({ id: d.id, ...d.data() } as Product);
           });
-          setProducts(list);
+          if (list.length > 0) {
+            setProducts(list);
+          } else {
+            // Firestore has no products yet -> fallback to INITIAL_PRODUCTS
+            setProducts(INITIAL_PRODUCTS);
+            // If admin is logged in, auto-seed to Firestore immediately
+            if (auth.currentUser) {
+              const seedBatch = async () => {
+                try {
+                  for (const p of INITIAL_PRODUCTS) {
+                    await setDoc(doc(db, 'products', p.id), p);
+                  }
+                  setLastSyncTime(new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+                } catch (e) {
+                  console.warn('Auto-seed products note:', e);
+                }
+              };
+              seedBatch();
+            }
+          }
           checkComplete();
         },
         (error) => {
           console.error('Error listening to products:', error);
-          setLoadError('Failed to load live products from cloud.');
+          const code = (error as any)?.code || 'error';
+          setLoadError(`Failed to load live products [${code}]: ${error.message}`);
+          setIsCloudConnected(false);
           setIsLoading(false);
-          handleFirestoreError(error, OperationType.LIST, 'products');
+          setProducts(INITIAL_PRODUCTS);
         }
       );
       unsubs.push(unsubProducts);
@@ -1331,16 +1375,19 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         'sm_founder',
       ];
       keysToRemove.forEach((k) => localStorage.removeItem(k));
+      localStorage.setItem('sm_cloud_migrated_done', 'true');
 
       setMigrationStatus({
         running: false,
         progress: 100,
-        message: 'Success! All local data & photos migrated to Firebase Firestore & Storage.',
+        message: 'Success! All local data & photos migrated to Firebase Firestore.',
         complete: true,
         error: null,
       });
 
-      showToast('All local data successfully uploaded to Firebase cloud!');
+      setLastSyncTime(new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+      setLastSyncError(null);
+      showToast('All local data successfully saved to Firestore!');
     } catch (err: any) {
       console.error('Migration failed:', err);
       setMigrationStatus({
@@ -1453,6 +1500,9 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         isLoading,
         loadError,
         retryLoading,
+        lastSyncTime,
+        lastSyncError,
+        isCloudConnected,
         uploadLocalDataToCloud,
         migrationStatus,
         orderModalData,

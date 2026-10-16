@@ -248,7 +248,8 @@ export const HomeView: React.FC = () => {
                     >
                       <img
                         src={IMAGES[story.img] || story.img}
-                        alt={story.cap || 'Shae.made post'}
+                        alt={story.cap || 'Shae.made craft showcase'}
+                        loading="lazy"
                         className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                       />
                       <div className="absolute inset-0 bg-black/25 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white text-[10px] font-bold gap-1">
@@ -272,6 +273,7 @@ export const HomeView: React.FC = () => {
                   <img
                     src={IMAGES[founderSettings.img] || founderSettings.img || IMAGES.artisan}
                     alt={`${founderSettings.name} · ${founderSettings.role}`}
+                    loading="lazy"
                     className="w-full h-full object-cover"
                   />
                 </div>

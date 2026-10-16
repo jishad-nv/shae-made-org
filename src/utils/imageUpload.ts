@@ -1,66 +1,71 @@
-import { storage } from '../firebase';
-import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
+/**
+ * Image processing utility without Firebase Storage.
+ * Resizes each image in the browser to max 900px, converts to WebP (with JPEG fallback),
+ * guarantees target under 120 KB, and outputs a base64 data URL stored directly inside Firestore.
+ */
 
 export function isBase64DataUrl(str?: string): boolean {
   if (!str) return false;
   return str.startsWith('data:image/');
 }
 
-export function dataUrlToBlob(dataUrl: string): Blob {
-  const arr = dataUrl.split(',');
-  const mimeMatch = arr[0].match(/:(.*?);/);
-  const mime = mimeMatch ? mimeMatch[1] : 'image/jpeg';
-  const bstr = atob(arr[1]);
-  let n = bstr.length;
-  const u8arr = new Uint8Array(n);
-  while (n--) {
-    u8arr[n] = bstr.charCodeAt(n);
-  }
-  return new Blob([u8arr], { type: mime });
+/**
+ * Calculates approximate byte size of a base64 data URL.
+ */
+export function getBase64ByteSize(dataUrl: string): number {
+  if (!dataUrl) return 0;
+  const base64Content = dataUrl.split(',')[1] || dataUrl;
+  return Math.round((base64Content.length * 3) / 4);
 }
 
 /**
- * Compresses an image to max 1200px width/height and guarantees it is under maxBytes (default 300 KB).
+ * Loads an image from File, Blob, or URL into an HTMLImageElement.
  */
-export async function compressImage(
-  source: File | Blob | string,
-  maxDimension = 1200,
-  maxBytes = 300 * 1024
-): Promise<Blob> {
-  let blob: Blob;
-  if (typeof source === 'string') {
-    if (isBase64DataUrl(source)) {
-      blob = dataUrlToBlob(source);
-    } else {
-      // If it's a URL, fetch it as blob
-      const res = await fetch(source);
-      blob = await res.blob();
-    }
-  } else {
-    blob = source;
-  }
+function loadImage(source: File | Blob | string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
 
-  // Load image onto Image element
-  const imgBitmap = await createImageBitmap(blob).catch(async () => {
-    return new Promise<HTMLImageElement>((resolve, reject) => {
-      const url = URL.createObjectURL(blob);
-      const img = new Image();
+    if (typeof source === 'string') {
+      img.onload = () => resolve(img);
+      img.onerror = (e) => reject(new Error('Failed to load image from source'));
+      img.src = source;
+    } else {
+      const objectUrl = URL.createObjectURL(source);
       img.onload = () => {
-        URL.revokeObjectURL(url);
+        URL.revokeObjectURL(objectUrl);
         resolve(img);
       };
       img.onerror = (e) => {
-        URL.revokeObjectURL(url);
-        reject(e);
+        URL.revokeObjectURL(objectUrl);
+        reject(new Error('Failed to load image from file/blob'));
       };
-      img.src = url;
-    });
+      img.src = objectUrl;
+    }
   });
+}
 
-  const origWidth = imgBitmap.width;
-  const origHeight = imgBitmap.height;
+/**
+ * Resizes and compresses an image to a base64 data URL:
+ * - Max dimension: 900px
+ * - Target format: WebP (JPEG fallback)
+ * - Target size: < 120 KB
+ */
+export async function compressImageToBase64(
+  source: File | Blob | string,
+  maxDimension = 900,
+  maxBytes = 120 * 1024,
+  onProgress?: (percent: number) => void
+): Promise<string> {
+  if (onProgress) onProgress(15);
 
-  // Scale down to max 1200px
+  const img = await loadImage(source);
+  if (onProgress) onProgress(35);
+
+  const origWidth = img.naturalWidth || img.width;
+  const origHeight = img.naturalHeight || img.height;
+
+  // Calculate scaled dimensions (max 900px)
   let targetWidth = origWidth;
   let targetHeight = origHeight;
 
@@ -79,77 +84,56 @@ export async function compressImage(
   canvas.height = targetHeight;
   const ctx = canvas.getContext('2d');
   if (!ctx) {
-    throw new Error('Canvas 2D context not supported');
+    throw new Error('Canvas 2D context not available for image compression');
   }
 
-  // Draw scaled image
-  ctx.drawImage(imgBitmap as any, 0, 0, targetWidth, targetHeight);
+  // Draw image on canvas with high-quality smoothing
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
 
-  // Attempt WebP first, fallback to JPEG
+  if (onProgress) onProgress(60);
+
+  // Check if WebP is supported
   const testCanvas = document.createElement('canvas');
   const supportsWebP = testCanvas.toDataURL('image/webp').indexOf('data:image/webp') === 0;
   const mimeType = supportsWebP ? 'image/webp' : 'image/jpeg';
 
+  // Iteratively reduce quality until under maxBytes (120 KB)
   let quality = 0.82;
-  let compressedBlob: Blob = await new Promise<Blob>((resolve) =>
-    canvas.toBlob((b) => resolve(b || blob), mimeType, quality)
-  );
+  let dataUrl = canvas.toDataURL(mimeType, quality);
+  let byteSize = getBase64ByteSize(dataUrl);
 
-  // Iteratively reduce quality until under maxBytes (300 KB)
-  while (compressedBlob.size > maxBytes && quality > 0.35) {
+  while (byteSize > maxBytes && quality > 0.35) {
     quality -= 0.12;
-    const nextBlob = await new Promise<Blob>((resolve) =>
-      canvas.toBlob((b) => resolve(b || compressedBlob), mimeType, quality)
-    );
-    compressedBlob = nextBlob;
+    dataUrl = canvas.toDataURL(mimeType, quality);
+    byteSize = getBase64ByteSize(dataUrl);
   }
 
-  return compressedBlob;
+  // If still above 120 KB, try scaling down further
+  if (byteSize > maxBytes) {
+    const smallerCanvas = document.createElement('canvas');
+    smallerCanvas.width = Math.round(targetWidth * 0.75);
+    smallerCanvas.height = Math.round(targetHeight * 0.75);
+    const smCtx = smallerCanvas.getContext('2d');
+    if (smCtx) {
+      smCtx.drawImage(canvas, 0, 0, smallerCanvas.width, smallerCanvas.height);
+      dataUrl = smallerCanvas.toDataURL(mimeType, 0.65);
+    }
+  }
+
+  if (onProgress) onProgress(100);
+  return dataUrl;
 }
 
 /**
- * Compresses an image and uploads it to Firebase Storage.
- * Returns the permanent HTTPS download URL.
+ * Compatibility wrapper: returns base64 data URL directly without Firebase Storage.
  */
 export async function uploadImageToStorage(
   source: File | Blob | string,
-  folder = 'products',
-  customName?: string,
+  _folder = 'products',
+  _customName?: string,
   onProgress?: (percent: number) => void
 ): Promise<string> {
-  const compressedBlob = await compressImage(source, 1200, 300 * 1024);
-  const ext = compressedBlob.type.includes('webp') ? 'webp' : 'jpg';
-  const name =
-    customName ||
-    `${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
-  const storageRef = ref(storage, `${folder}/${name}`);
-
-  const uploadTask = uploadBytesResumable(storageRef, compressedBlob, {
-    contentType: compressedBlob.type,
-    cacheControl: 'public, max-age=31536000',
-  });
-
-  return new Promise<string>((resolve, reject) => {
-    uploadTask.on(
-      'state_changed',
-      (snapshot) => {
-        if (onProgress && snapshot.totalBytes > 0) {
-          const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-          onProgress(Math.round(progress));
-        }
-      },
-      (error) => {
-        console.error('Firebase Storage Upload Error:', error);
-        reject(error);
-      },
-      async () => {
-        try {
-          const downloadUrl = await getDownloadURL(uploadTask.snapshot.ref);
-          resolve(downloadUrl);
-        } catch (err) {
-          reject(err);
-        }
-      }
-    );
-  });
+  return compressImageToBase64(source, 900, 120 * 1024, onProgress);
 }

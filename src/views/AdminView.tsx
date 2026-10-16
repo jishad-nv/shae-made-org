@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useStore } from '../context/StoreContext';
 import { auth } from '../firebase';
 import { signOut } from 'firebase/auth';
-import { uploadImageToStorage } from '../utils/imageUpload';
+import { compressImageToBase64, uploadImageToStorage } from '../utils/imageUpload';
 import { STAGES, INITIAL_FOUNDER } from '../data/initialData';
 import { IMAGES } from '../data/images';
 import { Product, Inquiry, Review, Order, FounderSettings } from '../types';
@@ -23,6 +23,9 @@ export const AdminView: React.FC<{ activeTab?: string }> = ({ activeTab = 'ov' }
     navigateTo,
     showToast,
     isLoading,
+    lastSyncTime,
+    lastSyncError,
+    isCloudConnected,
     uploadLocalDataToCloud,
     migrationStatus,
     logInquiry,
@@ -177,20 +180,33 @@ export const AdminView: React.FC<{ activeTab?: string }> = ({ activeTab = 'ov' }
   ];
 
   const [isUploadingPhoto, setIsUploadingPhoto] = useState<boolean>(false);
+  const [uploadProgress, setUploadProgress] = useState<number>(0);
+  const [uploadStatusText, setUploadStatusText] = useState<string>('');
 
-  // Compress & upload image directly to Firebase Storage (max 1200px, WebP/JPG under 300KB)
-  const uploadPhotoToCloud = async (file: File, folder = 'products'): Promise<string> => {
+  // Compress image in browser to max 900px, WebP under 120KB, stored directly in Firestore
+  const uploadPhotoToCloud = async (file: File, _folder = 'products'): Promise<string> => {
     setIsUploadingPhoto(true);
+    setUploadProgress(15);
+    setUploadStatusText('Resizing to max 900px...');
     try {
-      const url = await uploadImageToStorage(file, folder);
-      showToast('Photo uploaded to Firebase Storage!');
-      return url;
+      const dataUrl = await compressImageToBase64(file, 900, 120 * 1024, (p) => {
+        setUploadProgress(p);
+        if (p < 50) setUploadStatusText('Resizing image...');
+        else if (p < 90) setUploadStatusText('Compressing to WebP (<120 KB)...');
+        else setUploadStatusText('Optimized & Ready!');
+      });
+      showToast('Photo compressed to WebP (<120 KB)!');
+      return dataUrl;
     } catch (err: any) {
-      console.error('Error uploading photo to storage:', err);
-      showToast('Photo upload failed: ' + (err.message || 'Error'));
+      console.error('Error compressing photo:', err);
+      showToast('Photo compression failed: ' + (err.message || 'Error'));
       throw err;
     } finally {
       setIsUploadingPhoto(false);
+      setTimeout(() => {
+        setUploadProgress(0);
+        setUploadStatusText('');
+      }, 2000);
     }
   };
 
@@ -456,45 +472,67 @@ export const AdminView: React.FC<{ activeTab?: string }> = ({ activeTab = 'ov' }
             {/* Cloud Data Persistence & Migration Card */}
             <div className="craft-card p-4 sm:p-5 bg-gradient-to-br from-[#ffffff] via-[#fcf9f4] to-[#e8eee3] border-2 border-[#59684c]/30 shadow-xs space-y-3">
               <div className="flex items-start justify-between flex-wrap gap-3">
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <span className="inline-flex items-center gap-1.5 text-xs font-bold text-[#59684c] bg-[#e8eee3] px-2.5 py-0.5 rounded-full">
-                      <span className="material-icon text-sm">cloud_sync</span>
-                      <span>Firebase Realtime Cloud Database & Storage Active</span>
+                <div className="space-y-1.5 flex-1 min-w-[280px]">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {lastSyncError ? (
+                      <span className="inline-flex items-center gap-1.5 text-xs font-bold text-red-700 bg-red-100 px-2.5 py-0.5 rounded-full border border-red-200">
+                        <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                        <span>Cloud Error: {lastSyncError}</span>
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-800 bg-emerald-100 px-2.5 py-0.5 rounded-full border border-emerald-200">
+                        <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                        <span>Connected to cloud</span>
+                      </span>
+                    )}
+
+                    <span className="text-[11px] font-semibold text-[#59684c] bg-[#e8eee3] px-2.5 py-0.5 rounded-full border border-[#d6e0ce]">
+                      Last saved: {lastSyncTime || 'Synced with Firestore'}
                     </span>
-                    <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-                      Live Multi-Device Sync
+
+                    <span className="text-[11px] font-semibold text-[#737c6e] bg-white px-2 py-0.5 rounded-full border border-[#eee7dc]">
+                      {products.length} Products · {categories.length} Categories · Realtime onSnapshot
                     </span>
                   </div>
+
                   <h3 className="font-luxury-serif text-lg font-bold text-[#2b352a]">
                     Cloud Data Persistence & Sync
                   </h3>
                   <p className="text-xs text-[#737c6e] max-w-xl leading-relaxed">
-                    All products, craft photos, orders, reviews, and site settings are stored in live Firebase Firestore and Cloud Storage. All visitors on any phone or device see your latest products and changes live without redeploying.
+                    All products, craft photos (WebP &lt;120 KB), categories, site settings, and orders are stored in live Firebase Firestore and synced in realtime with onSnapshot to all visitors across every device.
                   </p>
                 </div>
 
-                <button
-                  type="button"
-                  disabled={migrationStatus.running}
-                  onClick={() => {
-                    if (window.confirm("Upload all your browser's local products, photos, and settings to Firebase Cloud so other devices can see them?")) {
-                      uploadLocalDataToCloud();
-                    }
-                  }}
-                  className={`btn-order text-xs py-2 px-4 shadow-sm flex items-center gap-2 cursor-pointer ${
-                    migrationStatus.running ? 'opacity-60 cursor-not-allowed' : ''
-                  }`}
-                >
-                  <span className="material-icon text-sm">
-                    {migrationStatus.running ? 'sync' : 'cloud_upload'}
+                {!migrationStatus.complete && (
+                  <button
+                    type="button"
+                    disabled={migrationStatus.running}
+                    onClick={() => {
+                      if (window.confirm("Upload all your browser's local products, photos, and settings to Firebase Cloud so other devices can see them?")) {
+                        uploadLocalDataToCloud();
+                      }
+                    }}
+                    className={`btn-order text-xs py-2 px-4 shadow-sm flex items-center gap-2 cursor-pointer ${
+                      migrationStatus.running ? 'opacity-60 cursor-not-allowed' : ''
+                    }`}
+                  >
+                    <span className="material-icon text-sm">
+                      {migrationStatus.running ? 'sync' : 'cloud_upload'}
+                    </span>
+                    <span>
+                      {migrationStatus.running
+                        ? 'Uploading to Cloud...'
+                        : 'Upload my old local data to cloud'}
+                    </span>
+                  </button>
+                )}
+
+                {migrationStatus.complete && (
+                  <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-xl">
+                    <span className="material-icon text-sm text-emerald-600">check_circle</span>
+                    <span>Cloud Data Synchronized</span>
                   </span>
-                  <span>
-                    {migrationStatus.running
-                      ? 'Uploading to Cloud...'
-                      : 'Upload my local data to cloud'}
-                  </span>
-                </button>
+                )}
               </div>
 
               {/* Migration Progress Indicator */}
@@ -510,16 +548,6 @@ export const AdminView: React.FC<{ activeTab?: string }> = ({ activeTab = 'ov' }
                       style={{ width: `${migrationStatus.progress}%` }}
                     />
                   </div>
-                </div>
-              )}
-
-              {migrationStatus.complete && (
-                <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-center justify-between">
-                  <span className="flex items-center gap-1.5 font-bold">
-                    <span className="material-icon text-base">check_circle</span>
-                    <span>{migrationStatus.message}</span>
-                  </span>
-                  <span className="text-[11px] font-semibold">Firestore & Storage Live</span>
                 </div>
               )}
 
@@ -1252,8 +1280,8 @@ export const AdminView: React.FC<{ activeTab?: string }> = ({ activeTab = 'ov' }
 
                   <div className="flex items-center gap-2 flex-wrap">
                     <label className="btn-primary text-xs py-1.5 px-3 cursor-pointer">
-                      <span className="material-icon text-sm">cloud_upload</span>
-                      <span>{isUploadingPhoto ? 'Uploading to Storage...' : 'Upload Photos (Cloud Storage)'}</span>
+                      <span className="material-icon text-sm">add_photo_alternate</span>
+                      <span>{isUploadingPhoto ? 'Processing photo...' : 'Upload Photos (WebP <120 KB)'}</span>
                       <input
                         type="file"
                         accept="image/*"
@@ -1263,10 +1291,10 @@ export const AdminView: React.FC<{ activeTab?: string }> = ({ activeTab = 'ov' }
                         onChange={async (e) => {
                           const files = Array.from(e.target.files || []);
                           if (files.length === 0) return;
-                          showToast(`Uploading ${files.length} photo(s) to Firebase Storage...`);
+                          showToast(`Optimizing ${files.length} photo(s)...`);
                           try {
                             for (let i = 0; i < Math.min(files.length, 10); i++) {
-                              const cloudUrl = await uploadPhotoToCloud(files[i], 'products');
+                              const cloudUrl = await uploadPhotoToCloud(files[i]);
                               setNewProductState((s) => {
                                 if (i === 0 && (!s.img || s.img === 'coasters')) {
                                   return { ...s, img: cloudUrl };
@@ -1279,7 +1307,7 @@ export const AdminView: React.FC<{ activeTab?: string }> = ({ activeTab = 'ov' }
                                 }
                               });
                             }
-                            showToast(`${files.length} photo(s) uploaded to Cloud Storage!`);
+                            showToast(`${files.length} photo(s) optimized & added!`);
                           } catch (err: any) {
                             showToast('Upload error: ' + (err.message || 'Failed'));
                           } finally {
@@ -1288,6 +1316,18 @@ export const AdminView: React.FC<{ activeTab?: string }> = ({ activeTab = 'ov' }
                         }}
                       />
                     </label>
+
+                    {uploadProgress > 0 && (
+                      <div className="flex items-center gap-2 text-xs font-semibold text-[#59684c] bg-white px-3 py-1 rounded-xl border border-[#eee7dc]">
+                        <div className="w-20 h-1.5 bg-[#eee7dc] rounded-full overflow-hidden">
+                          <div
+                            className="bg-[#59684c] h-full transition-all duration-200"
+                            style={{ width: `${uploadProgress}%` }}
+                          />
+                        </div>
+                        <span className="text-[11px]">{uploadStatusText} ({uploadProgress}%)</span>
+                      </div>
+                    )}
 
                     <div className="flex items-center gap-1.5 flex-1 min-w-[200px]">
                       <input
@@ -1529,7 +1569,7 @@ export const AdminView: React.FC<{ activeTab?: string }> = ({ activeTab = 'ov' }
 
                         {allPhotos.length < 10 && (
                           <label className="w-18 h-18 rounded-xl border-2 border-dashed border-[#59684c]/40 bg-white flex flex-col items-center justify-center text-[#59684c] cursor-pointer text-xs font-semibold">
-                            <span className="material-icon text-xl">cloud_upload</span>
+                            <span className="material-icon text-xl">add_photo_alternate</span>
                             <span className="text-[9.5px]">Upload</span>
                             <input
                               type="file"
@@ -1539,13 +1579,13 @@ export const AdminView: React.FC<{ activeTab?: string }> = ({ activeTab = 'ov' }
                               onChange={async (e) => {
                                 const files = Array.from(e.target.files || []);
                                 if (files.length === 0) return;
-                                showToast(`Uploading ${files.length} photo(s) to Cloud Storage...`);
+                                showToast(`Optimizing ${files.length} photo(s)...`);
                                 try {
                                   for (const f of files) {
-                                    const cloudUrl = await uploadPhotoToCloud(f, 'products');
+                                    const cloudUrl = await uploadPhotoToCloud(f);
                                     await addProductPhoto(editForm.id, cloudUrl);
                                   }
-                                  showToast('Photos uploaded to Storage!');
+                                  showToast('Photos optimized & saved to cloud!');
                                 } catch (err: any) {
                                   showToast('Upload error: ' + (err.message || 'Error'));
                                 } finally {

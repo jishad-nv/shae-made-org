@@ -23,6 +23,12 @@ service cloud.firestore {
       allow write: if isSignedIn();
     }
 
+    // Categories collection (if stored directly): anyone can read; admin can write
+    match /categories/{categoryId} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+
     // Reviews: anyone can read; admin can write
     match /reviews/{reviewId} {
       allow read: if true;
