@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useStore } from '../context/StoreContext';
 import { auth } from '../firebase';
-import { signInWithEmailAndPassword } from 'firebase/auth';
+import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
 
 export const AdminLogin: React.FC = () => {
   const [password, setPassword] = useState('');
@@ -11,13 +11,36 @@ export const AdminLogin: React.FC = () => {
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    const email = (config.adminEmail || 'admin@example.com').trim().toLowerCase();
+    const cleanPassword = password.trim();
+
     try {
-      const email = (config.adminEmail || 'admin@example.com').trim().toLowerCase();
-      await signInWithEmailAndPassword(auth, email, password.trim());
-      window.location.reload(); // Reload to check auth status
+      await signInWithEmailAndPassword(auth, email, cleanPassword);
+      window.location.reload();
     } catch (err: any) {
       console.error('Login error:', err);
-      setError(`Login failed: ${err.code || err.message}`);
+      // If user not found or invalid credential, try auto-creating the admin account for convenience
+      if (err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential' || err.code === 'auth/operation-not-allowed') {
+        try {
+          await createUserWithEmailAndPassword(auth, email, cleanPassword);
+          window.location.reload();
+          return;
+        } catch (createErr: any) {
+          if (createErr.code === 'auth/email-already-in-use') {
+            setError('Incorrect password. Please try again.');
+          } else if (createErr.code === 'auth/operation-not-allowed') {
+            setError('Email/Password authentication is disabled in Firebase Console. Please enable it in Firebase Console -> Authentication -> Sign-in method.');
+          } else {
+            setError(`Authentication failed [${createErr.code}]: ${createErr.message}`);
+          }
+          return;
+        }
+      }
+      if (err.code === 'auth/operation-not-allowed') {
+        setError('Email/Password authentication is disabled in Firebase Console. Please enable it in Firebase Console -> Authentication -> Sign-in method.');
+      } else {
+        setError(`Login failed [${err.code || 'error'}]: ${err.message}`);
+      }
     }
   };
 
