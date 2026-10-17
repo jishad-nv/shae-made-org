@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useStore } from '../context/StoreContext';
 import { auth } from '../firebase';
 import { signOut } from 'firebase/auth';
@@ -43,6 +43,7 @@ export const AdminView: React.FC<{ activeTab?: string }> = ({ activeTab = 'ov' }
     saveNewProduct,
     updateProductFull,
     deleteProduct,
+    removeDuplicateProducts,
     updateProductPhotoCover,
     removeProductPhoto,
     addProductPhoto,
@@ -110,7 +111,10 @@ export const AdminView: React.FC<{ activeTab?: string }> = ({ activeTab = 'ov' }
   }, [editingProductId, products]);
 
   const [showNewProductForm, setShowNewProductForm] = useState<boolean>(false);
-  const [newProductState, setNewProductState] = useState<Omit<Product, 'id'>>({
+  const [isSavingProduct, setIsSavingProduct] = useState<boolean>(false);
+  const [isRemovingDuplicates, setIsRemovingDuplicates] = useState<boolean>(false);
+
+  const [newProductState, setNewProductState] = useState<Omit<Product, 'id'> & { draftId?: string }>({
     name: '',
     sub: 'Handmade with love',
     desc: '',
@@ -122,7 +126,46 @@ export const AdminView: React.FC<{ activeTab?: string }> = ({ activeTab = 'ov' }
     vis: 1,
     img: 'coasters',
     more: [],
+    draftId: `p_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
   });
+
+  // Detect duplicate products with same name + price + cover image
+  const duplicateProductsInfo = useMemo(() => {
+    const seen = new Map<string, Product>();
+    const dupes: Product[] = [];
+    for (const p of products) {
+      const key = `${p.name.trim().toLowerCase()}__${p.price}__${(p.img || '').trim().slice(0, 80)}`;
+      if (seen.has(key)) {
+        dupes.push(p);
+      } else {
+        seen.set(key, p);
+      }
+    }
+    return {
+      count: dupes.length,
+      dupes,
+    };
+  }, [products]);
+
+  const handleRemoveDuplicates = async () => {
+    if (duplicateProductsInfo.count === 0) {
+      showToast('No duplicate products found. Catalog is clean!');
+      return;
+    }
+    const confirmed = window.confirm(
+      `Found ${duplicateProductsInfo.count} duplicate product(s) in catalog with matching name, price, and photo. Delete extras from cloud and keep 1 of each?`
+    );
+    if (!confirmed) return;
+
+    setIsRemovingDuplicates(true);
+    try {
+      await removeDuplicateProducts();
+    } catch (err: any) {
+      console.error('Error removing duplicates:', err);
+    } finally {
+      setIsRemovingDuplicates(false);
+    }
+  };
 
   const [imageUrlInput, setImageUrlInput] = useState<string>('');
 
@@ -1238,13 +1281,38 @@ export const AdminView: React.FC<{ activeTab?: string }> = ({ activeTab = 'ov' }
                 </p>
               </div>
 
-              <button
-                onClick={() => setShowNewProductForm((v) => !v)}
-                className="btn-primary text-xs py-1.5 px-3.5"
-              >
-                <span className="material-icon text-sm">add</span>
-                {showNewProductForm ? 'Close Form' : 'New Craft'}
-              </button>
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  onClick={handleRemoveDuplicates}
+                  disabled={isRemovingDuplicates}
+                  className={`text-xs py-1.5 px-3 rounded-xl border flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-60 shadow-xs ${
+                    duplicateProductsInfo.count > 0
+                      ? 'bg-amber-50 border-amber-300 text-amber-900 hover:bg-amber-100 font-bold animate-pulse'
+                      : 'bg-white border-[#eee7dc] text-[#59684c] hover:bg-[#fcf9f4]'
+                  }`}
+                  title="Detect and remove duplicate products with identical name, price, and image"
+                >
+                  <span className="material-icon text-sm">
+                    {isRemovingDuplicates ? 'sync' : 'auto_fix_high'}
+                  </span>
+                  <span>
+                    {isRemovingDuplicates
+                      ? 'Cleaning duplicates...'
+                      : duplicateProductsInfo.count > 0
+                      ? `Remove Duplicates (${duplicateProductsInfo.count})`
+                      : 'Remove Duplicate Products'}
+                  </span>
+                </button>
+
+                <button
+                  onClick={() => setShowNewProductForm((v) => !v)}
+                  className="btn-primary text-xs py-1.5 px-3.5 shadow-xs"
+                >
+                  <span className="material-icon text-sm">add</span>
+                  {showNewProductForm ? 'Close Form' : 'New Craft'}
+                </button>
+              </div>
             </div>
 
             {/* CREATE NEW CRAFT FORM - WITH UP TO 10 PHOTOS */}
@@ -1461,27 +1529,44 @@ export const AdminView: React.FC<{ activeTab?: string }> = ({ activeTab = 'ov' }
 
                 <div className="flex justify-end gap-2 pt-1">
                   <button
-                    onClick={() => {
+                    type="button"
+                    disabled={isSavingProduct}
+                    onClick={async () => {
                       if (!newProductState.name.trim()) return showToast('Please enter craft name');
-                      saveNewProduct(newProductState);
-                      setShowNewProductForm(false);
-                      setNewProductState({
-                        name: '',
-                        sub: 'Handmade with love',
-                        desc: '',
-                        cat: categories[0]?.name || 'Resin Crafts',
-                        price: 499,
-                        mrp: 699,
-                        badge: 'New',
-                        stock: 1,
-                        vis: 1,
-                        img: 'coasters',
-                        more: [],
-                      });
+                      setIsSavingProduct(true);
+                      try {
+                        await saveNewProduct(newProductState);
+                        setShowNewProductForm(false);
+                        setNewProductState({
+                          name: '',
+                          sub: 'Handmade with love',
+                          desc: '',
+                          cat: categories[0]?.name || 'Resin Crafts',
+                          price: 499,
+                          mrp: 699,
+                          badge: 'New',
+                          stock: 1,
+                          vis: 1,
+                          img: 'coasters',
+                          more: [],
+                          draftId: `p_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+                        });
+                      } catch (err) {
+                        console.error('Failed to save craft product:', err);
+                      } finally {
+                        setIsSavingProduct(false);
+                      }
                     }}
-                    className="btn-order text-xs py-2 px-4 shadow-sm"
+                    className="btn-order text-xs py-2 px-4 shadow-sm flex items-center gap-1.5 cursor-pointer disabled:opacity-60"
                   >
-                    Save Craft Product
+                    {isSavingProduct ? (
+                      <>
+                        <span className="material-icon text-sm animate-spin">sync</span>
+                        <span>Saving Craft...</span>
+                      </>
+                    ) : (
+                      <span>Save Craft Product</span>
+                    )}
                   </button>
                 </div>
               </div>

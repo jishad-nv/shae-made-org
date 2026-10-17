@@ -28,6 +28,8 @@ export const HomeView: React.FC = () => {
 
   const featuredProduct = trendingProducts[0] || products[0];
 
+  const logoSrc = config.logo ? (IMAGES[config.logo] || config.logo) : IMAGES.logo;
+
   const averageRating = reviews.length
     ? (reviews.reduce((acc, r) => acc + r.r, 0) / reviews.length).toFixed(1)
     : '4.9';
@@ -197,8 +199,8 @@ export const HomeView: React.FC = () => {
                 <div className="p-[2px] rounded-full bg-gradient-to-tr from-amber-400 via-rose-500 to-purple-600 shrink-0">
                   <div className="w-12 h-12 rounded-full overflow-hidden bg-white p-0.5">
                     <img
-                      src={IMAGES.logo}
-                      alt="Shae.made Instagram"
+                      src={logoSrc}
+                      alt="Shae.made Instagram Brand"
                       className="w-full h-full object-contain rounded-full"
                     />
                   </div>
@@ -223,7 +225,11 @@ export const HomeView: React.FC = () => {
                 rel="noopener noreferrer"
                 className="btn-secondary text-xs py-1.5 px-3 flex items-center gap-1.5"
               >
-                <span className="material-icon text-xs">open_in_new</span>
+                <img
+                  src={logoSrc}
+                  alt=""
+                  className="w-4 h-4 object-contain rounded-full shrink-0"
+                />
                 <span>Follow on Instagram</span>
               </a>
             </div>

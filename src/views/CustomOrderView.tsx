@@ -84,25 +84,24 @@ export const CustomOrderView: React.FC = () => {
         base64Photos.push(p.dataUrl);
       }
 
-      // 2. Check if Web Share API with files is supported
+      const msg = constructMessage();
+
       const canShareFiles =
         typeof navigator.canShare === 'function' &&
         files.length > 0 &&
         navigator.canShare({ files });
 
-      const msg = constructMessage();
-
-      // Log inquiry to Firestore
-      logInquiry(
-        'Custom Order Lead',
-        `Custom: ${craftType}`,
-        Number(budget) || 0,
-        '—',
-        '',
-        base64Photos
-      );
-
       if (canShareFiles) {
+        // Fire lead logging in background so user gesture is never delayed
+        logInquiry(
+          'Custom Order Lead',
+          `Custom: ${craftType}`,
+          Number(budget) || 0,
+          '—',
+          '',
+          base64Photos
+        ).catch(() => {});
+
         try {
           await navigator.share({
             title: 'Custom Order - Shae.made',
@@ -120,6 +119,16 @@ export const CustomOrderView: React.FC = () => {
           console.warn('Share API failed, falling back to link method:', shareErr);
         }
       }
+
+      // Log inquiry for fallback flow
+      logInquiry(
+        'Custom Order Lead',
+        `Custom: ${craftType}`,
+        Number(budget) || 0,
+        '—',
+        '',
+        base64Photos
+      ).catch(() => {});
 
       // 3. Fallback: Save photos in Firestore collection "customOrders" with unique ID
       let refLink = '';

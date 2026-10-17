@@ -128,9 +128,10 @@ interface StoreContextType {
 
   // Product Actions
   updateProductInline: (id: string, field: 'price' | 'mrp' | 'stock' | 'vis' | 'badge', value: any) => Promise<void>;
-  saveNewProduct: (product: Omit<Product, 'id'>) => Promise<void>;
+  saveNewProduct: (product: Omit<Product, 'id'>, customId?: string) => Promise<void>;
   updateProductFull: (id: string, updated: Partial<Product>) => Promise<void>;
   deleteProduct: (id: string) => Promise<void>;
+  removeDuplicateProducts: () => Promise<{ removedCount: number }>;
   updateProductPhotoCover: (id: string, photoIndex: number) => Promise<void>;
   removeProductPhoto: (id: string, photoIndex: number) => Promise<void>;
   addProductPhoto: (id: string, photoData: string) => Promise<void>;
@@ -875,20 +876,43 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     }
   };
 
-  const saveNewProduct = async (productData: Omit<Product, 'id'>) => {
-    const id = `p${Date.now().toString().slice(-6)}`;
+  const saveNewProduct = async (productData: Omit<Product, 'id'>, customId?: string) => {
+    if (!requireAdmin()) return;
+    const cleanSlug = productData.name
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/(^-|-$)/g, '')
+      .slice(0, 24);
+    const id =
+      customId ||
+      (productData as any).draftId ||
+      `p_${cleanSlug || 'craft'}_${Date.now().toString(36)}`;
+
+    const cleanProductData = { ...productData };
+    delete (cleanProductData as any).draftId;
+
     const newProd: Product = {
-      ...productData,
+      ...cleanProductData,
       id,
     };
 
     try {
-      await setDoc(doc(db, 'products', id), newProd);
-      setProducts((prev) => [newProd, ...prev]);
+      await setDoc(doc(db, 'products', id), newProd, { merge: true });
+      setProducts((prev) => {
+        const idx = prev.findIndex((p) => p.id === id);
+        if (idx >= 0) {
+          const updated = [...prev];
+          updated[idx] = newProd;
+          return updated;
+        }
+        return [newProd, ...prev];
+      });
       showToast(`Craft "${newProd.name}" saved to cloud!`);
     } catch (err) {
       console.error('Error saving new product to cloud:', err);
       handleFirestoreError(err, OperationType.CREATE, `products/${id}`);
+      throw err;
     }
   };
 
@@ -913,6 +937,42 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     } catch (err) {
       console.error('Error deleting product:', err);
       handleFirestoreError(err, OperationType.DELETE, `products/${id}`);
+    }
+  };
+
+  const removeDuplicateProducts = async (): Promise<{ removedCount: number }> => {
+    if (!requireAdmin()) return { removedCount: 0 };
+    const seen = new Map<string, Product>();
+    const duplicatesToDelete: Product[] = [];
+
+    for (const p of products) {
+      const key = `${p.name.trim().toLowerCase()}__${p.price}__${(p.img || '').trim().slice(0, 80)}`;
+      if (seen.has(key)) {
+        duplicatesToDelete.push(p);
+      } else {
+        seen.set(key, p);
+      }
+    }
+
+    if (duplicatesToDelete.length === 0) {
+      showToast('No duplicate products found. Catalog is clean!');
+      return { removedCount: 0 };
+    }
+
+    try {
+      for (const dup of duplicatesToDelete) {
+        await deleteDoc(doc(db, 'products', dup.id));
+      }
+      setProducts((prev) => {
+        const deletedIds = new Set(duplicatesToDelete.map((d) => d.id));
+        return prev.filter((p) => !deletedIds.has(p.id));
+      });
+      showToast(`Removed ${duplicatesToDelete.length} duplicate product(s) from cloud!`);
+      return { removedCount: duplicatesToDelete.length };
+    } catch (err: any) {
+      console.error('Error removing duplicates:', err);
+      handleFirestoreError(err, OperationType.DELETE, 'products/duplicates');
+      throw err;
     }
   };
 
@@ -1211,9 +1271,19 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       const localInquiriesRaw = localStorage.getItem('sm_inq');
       const localFounderRaw = localStorage.getItem('sm_founder');
 
-      let sourceProducts: Product[] = localProductsRaw
+      let rawSourceProducts: Product[] = localProductsRaw
         ? JSON.parse(localProductsRaw)
         : (products.length > 0 ? products : INITIAL_PRODUCTS);
+
+      // Make migration idempotent: deduplicate products by name, price, and cover image
+      const dedupMap = new Map<string, Product>();
+      for (const p of rawSourceProducts) {
+        const key = `${p.name.trim().toLowerCase()}__${p.price}__${(p.img || '').trim().slice(0, 80)}`;
+        if (!dedupMap.has(key)) {
+          dedupMap.set(key, p);
+        }
+      }
+      const sourceProducts: Product[] = Array.from(dedupMap.values());
       let sourceCategories: Category[] = localCategoriesRaw
         ? JSON.parse(localCategoriesRaw)
         : (categories.length > 0 ? categories : INITIAL_CATEGORIES);
@@ -1539,6 +1609,7 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         saveNewProduct,
         updateProductFull,
         deleteProduct,
+        removeDuplicateProducts,
         updateProductPhotoCover,
         removeProductPhoto,
         addProductPhoto,
